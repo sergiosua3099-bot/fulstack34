@@ -322,24 +322,23 @@ app.post(
       // 3) Mensaje IA
       const message = generarMensajePersonalizado(nombreFinal, idea);
 
-      // 4) Respuesta JSON para Shopify (resultado-ia usa sessionStorage)
+      // 4) REDIRECT A SHOPIFY (ANTES era JSON)
       const finalProductUrl =
         productUrl ||
         (product && product.handle
           ? `https://${SHOPIFY_STORE_DOMAIN}/products/${product.handle}`
           : `https://${SHOPIFY_STORE_DOMAIN}/collections/all`);
 
-      const payload = {
-        success: true,
-        message,
-        userImageUrl,
-        generatedImageUrl,
-        productUrl: finalProductUrl,
-        productName: nombreFinal,
-      };
+      const redirectUrl =
+        `https://innotiva-vision.myshopify.com/pages/resultado-ia` +
+        `?before=${encodeURIComponent(userImageUrl)}` +
+        `&after=${encodeURIComponent(generatedImageUrl)}` +
+        `&name=${encodeURIComponent(nombreFinal)}` +
+        `&prod=${encodeURIComponent(finalProductUrl)}`;
 
-      console.log("✅ Respuesta /experiencia-premium lista");
-      res.json(payload);
+      console.log("🚀 REDIRECT →", redirectUrl);
+      return res.redirect(303, redirectUrl);
+
     } catch (err) {
       console.error("❌ Error en /experiencia-premium:", err);
       res.status(500).json({
