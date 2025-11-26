@@ -432,7 +432,8 @@ async function generarImagenIA(roomImageUrl, productName, idea) {
       input: {
         prompt,
         negative_prompt: negativePrompt,
-        image: roomImageUrl,
+        // 🔥 CAMBIO ÚNICO: el modelo espera "input_image"
+        input_image: roomImageUrl,
         // Modo img2img: fuerza baja para respetar la foto original
         prompt_strength: 0.42, // 0.8 = destruye; aquí mantenemos bastante del cuarto
         num_inference_steps: 35,
@@ -570,4 +571,3 @@ app.post(
 app.listen(PORT, () => {
   console.log(`🚀 INNOTIVA BACKEND PRO LISTO en puerto ${PORT}`);
 });
-
