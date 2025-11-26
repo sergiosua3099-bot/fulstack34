@@ -51,8 +51,10 @@ async function uploadBufferToCloudinary(buffer, folder, prefix) {
 // ==========================
 // SHOPIFY
 // ==========================
-const SHOPIFY_STORE_DOMAIN = process.env.SHOPIFY_STORE_DOMAIN || "innotiva-vision.myshopify.com";
-const SHOPIFY_STOREFRONT_TOKEN = process.env.SHOPIFY_STOREFRONT_TOKEN || "";
+const SHOPIFY_STORE_DOMAIN =
+  process.env.SHOPIFY_STORE_DOMAIN || "innotiva-vision.myshopify.com";
+const SHOPIFY_STOREFRONT_TOKEN =
+  process.env.SHOPIFY_STOREFRONT_TOKEN || "";
 
 // obtiene productos con imágenes y título
 async function getShopifyProducts() {
@@ -63,8 +65,15 @@ async function getShopifyProducts() {
       products(first: 80) {
         edges {
           node {
-            title handle
-            images(first: 1){edges{node{url}}}
+            title 
+            handle
+            images(first: 1){
+              edges{
+                node{
+                  url
+                }
+              }
+            }
           }
         }
       }
@@ -72,32 +81,35 @@ async function getShopifyProducts() {
   `;
 
   const headers = { "Content-Type": "application/json" };
-  if (SHOPIFY_STOREFRONT_TOKEN) headers["X-Shopify-Storefront-Access-Token"] = SHOPIFY_STOREFRONT_TOKEN;
+  if (SHOPIFY_STOREFRONT_TOKEN) {
+    headers["X-Shopify-Storefront-Access-Token"] = SHOPIFY_STOREFRONT_TOKEN;
+  }
 
   const r = await fetch(endpoint, {
     method: "POST",
-    headers, body: JSON.stringify({ query })
+    headers,
+    body: JSON.stringify({ query }),
   });
+
   const json = await r.json();
 
-  return json.data.products.edges.map(e => ({
+  return json.data.products.edges.map((e) => ({
     id: e.node.handle,
     title: e.node.title,
     handle: e.node.handle,
-    image: e.node.images.edges[0]?.node.url
+    image: e.node.images.edges[0]?.node.url,
   }));
 }
 
 async function obtenerProductoPorId(id) {
   const list = await getShopifyProducts();
-  return list.find(e => String(e.id) === String(id)) || null;
+  return list.find((e) => String(e.id) === String(id)) || null;
 }
 
 // ==========================
 // IA — FLUX  Balanced Mode
 // ==========================
 async function generarImagenIA(roomImageUrl, productName, idea) {
-
   const prompt = `
   Interior realista del MISMO CUARTO de referencia.
   Mantener cámara, paredes, luz y muebles.
@@ -112,28 +124,38 @@ async function generarImagenIA(roomImageUrl, productName, idea) {
   `;
 
   try {
-    const result = await fetch("https://api.runware.ai/v1/flux-img2img", {
-      method:"POST",
-      headers:{
-        "Content-Type":"application/json",
-        "Authorization":`Bearer ${process.env.RUNWARE_API_KEY}`
+    const resp = await fetch("https://api.runware.ai/v1/flux-img2img", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${process.env.RUNWARE_API_KEY}`,
       },
-      body:JSON.stringify({
+      body: JSON.stringify({
         image_url: roomImageUrl,
         prompt,
-        guidance_scale:5,
-        steps:20,
-        image_size:"normal"   // B = Balanced performance
-      })
-    }).then(r=>r.json());
+        guidance_scale: 5,
+        steps: 20,
+        image_size: "normal", // B = Balanced performance
+      }),
+    });
+
+    const result = await resp.json();
+
+    // 🔍 LOG COMPLETO DE LA RESPUESTA DE FLUX
+    console.log("🔍 FLUX RAW RESPONSE:", JSON.stringify(result).slice(0, 800));
+
+    // si viene error explícito
+    if (result.error || result.detail) {
+      console.error("❌ FLUX API ERROR FIELD:", result.error || result.detail);
+      throw new Error(result.error || result.detail || "Error FLUX");
+    }
 
     const out = result.output?.[0];
-    if(!out) throw new Error("No output received");
+    if (!out) throw new Error("No output received");
 
     return out; // URL final
-  }
-  catch(err){
-    console.error("❌ FLUX ERROR:",err);
+  } catch (err) {
+    console.error("❌ FLUX ERROR:", err);
     return "https://via.placeholder.com/1024x1024?text=FLUX+Error";
   }
 }
@@ -141,52 +163,107 @@ async function generarImagenIA(roomImageUrl, productName, idea) {
 // ==========================
 // Mensaje descripción IA
 // ==========================
-function generarMensajePersonalizado(name,idea){
+function generarMensajePersonalizado(name, idea) {
   return `
-    Hemos integrado **${name}** visualmente en tu espacio para ayudarte a
-    previsualizar cómo se vería antes de comprar.
-    ${idea?.trim()?`Consideramos tu indicación: "${idea}".`:"Aplicamos una composición limpia y balanceada."}
+Hemos integrado ${name} visualmente en tu espacio para ayudarte a
+previsualizar cómo se vería antes de comprar.
+${
+  idea?.trim()
+    ? `Consideramos tu indicación: "${idea}".`
+    : "Aplicamos una composición limpia y balanceada."
+}
   `.trim();
 }
 
 // ==========================
 // RUTAS
 // ==========================
-app.get("/", (req,res)=>res.send("INNOTIVA — Backend Flux Balanced Running ✔"));
+app.get("/", (req, res) =>
+  res.send("INNOTIVA — Backend Flux Balanced Running ✔")
+);
 
-app.get("/productos-shopify", async (req,res)=>{
-  try{ res.json({success:true,products:await getShopifyProducts()}); }
-  catch(e){ res.status(500).json({success:false,error:e.message}); }
+app.get("/productos-shopify", async (req, res) => {
+  try {
+    const products = await getShopifyProducts();
+    res.json({ success: true, products });
+  } catch (e) {
+    console.error("ERR /productos-shopify:", e);
+    res.status(500).json({ success: false, error: e.message });
+  }
 });
 
 // ==========================
 // MAIN ROUTE — IA ROOM
 // ==========================
-app.post("/experiencia-premium", upload.single("roomImage"), async (req,res)=>{
-  try{
-    if(!req.file) return res.status(400).json({error:"No llega imagen"});
+app.post(
+  "/experiencia-premium",
+  upload.single("roomImage"),
+  async (req, res) => {
+    try {
+      // 🔎 LOG DE LO QUE LLEGA DEL FORM
+      console.log("📩 Nueva solicitud /experiencia-premium");
+      console.log("🖼 file:", !!req.file, req.file?.mimetype, req.file?.size);
+      console.log("📦 body:", req.body);
 
-    const { productId, productName, idea, productUrl } = req.body;
+      if (!req.file) {
+        return res.status(400).json({ error: "No llega imagen" });
+      }
 
-    const product = await obtenerProductoPorId(productId);
-    const userImageUrl = await uploadBufferToCloudinary(req.file.buffer,"innotiva/rooms","room");
-    const generatedImageUrl = await generarImagenIA(userImageUrl,productName,idea);
+      const { productId, productName, idea, productUrl } = req.body;
 
-    res.json({
-      success:true,
-      message: generarMensajePersonalizado(productName,idea),
-      userImageUrl,
-      generatedImageUrl,
-      productUrl: productUrl || `https://${SHOPIFY_STORE_DOMAIN}/products/${productId}`,
-      productName
-    })
+      // info extra (por si luego la usamos)
+      let product = null;
+      try {
+        if (productId) {
+          product = await obtenerProductoPorId(productId);
+        }
+      } catch (e) {
+        console.warn("⚠️ No se pudo obtener producto desde Shopify:", e);
+      }
+
+      const finalName =
+        productName || product?.title || "tu producto decorativo";
+
+      // 1) subir imagen del usuario
+      const userImageUrl = await uploadBufferToCloudinary(
+        req.file.buffer,
+        "innotiva/rooms",
+        "room"
+      );
+
+      // 2) generar imagen IA
+      const generatedImageUrl = await generarImagenIA(
+        userImageUrl,
+        finalName,
+        idea
+      );
+
+      // 3) URL producto
+      const finalProductUrl =
+        productUrl ||
+        (product
+          ? product.url
+          : `https://${SHOPIFY_STORE_DOMAIN}/products/${productId}`);
+
+      // 4) respuesta al front
+      res.json({
+        success: true,
+        message: generarMensajePersonalizado(finalName, idea),
+        userImageUrl,
+        generatedImageUrl,
+        productUrl: finalProductUrl,
+        productName: finalName,
+      });
+    } catch (err) {
+      console.error("ERR /experiencia-premium:", err);
+      res.status(500).json({ success: false, error: "Error en flujo IA" });
+    }
   }
-  catch(err){
-    res.status(500).json({success:false,error:"Error en flujo IA"});
-  }
-});
+);
 
 // ==========================
 // LAUNCH
 // ==========================
-app.listen(PORT,()=>console.log("🔥 Backend ONLINE · PUERTO:",PORT));
+app.listen(PORT, () =>
+  console.log("🔥 Backend ONLINE · PUERTO:", PORT)
+);
