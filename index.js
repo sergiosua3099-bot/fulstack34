@@ -1,10 +1,8 @@
-// ======================================================
-// INNOTIVA BACKEND PRO - EXPERIENCIA PREMIUM
-// Integración completa: Cloudinary + Shopify + OpenAI + Replicate
-// Versión estable corregida para Render
-// Modelo OpenAI: gpt-4o-mini
-// Modelo Replicate: black-forest-labs/flux-1-dev-inpainting
-// ======================================================
+// ============================
+// INNOTIVA BACKEND PRO
+// FLUJO PREMIUM IA + SHOPIFY
+// SDXL-INPAINTING + OPENAI + CLOUDINARY
+// ============================
 
 require("dotenv").config();
 const express = require("express");
@@ -16,23 +14,19 @@ const OpenAI = require("openai");
 const cloudinary = require("cloudinary").v2;
 const fetch = require("node-fetch");
 
-// ======================================================
-// CONFIGURACIÓN GENERAL
-// ======================================================
-
 const app = express();
 const upload = multer({ storage: multer.memoryStorage() });
 
 const PORT = process.env.PORT || 10000;
 
 const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
+  apiKey: process.env.OPENAI_API_KEY,
 });
 
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
   api_key: process.env.CLOUDINARY_API_KEY,
-  api_secret: process.env.CLOUDINARY_API_SECRET
+  api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
 const SHOPIFY_STORE_DOMAIN = process.env.SHOPIFY_STORE_DOMAIN;
@@ -41,32 +35,25 @@ const SHOPIFY_STOREFRONT_TOKEN = process.env.SHOPIFY_STOREFRONT_TOKEN;
 const REPLICATE_API_TOKEN = process.env.REPLICATE_API_TOKEN;
 const REPLICATE_MODEL = "stability-ai/stable-diffusion-xl-inpainting-0.1";
 
-// ======================================================
-// MIDDLEWARE
-// ======================================================
-
-app.use(cors());
-app.use(express.json());
-
-app.get("/", (req, res) => {
-  res.send("INNOTIVA BACKEND PRO funcionando correctamente.");
-});
-
-// ======================================================
+// ----------------------------
 // HELPERS
-// ======================================================
-
-function log(step, extra) {
-  console.log(`[INNOTIVA] ${step}`, extra || "");
+// ----------------------------
+function logStep(step, extra = {}) {
+  console.log(`[INNOTIVA] ${step}`, Object.keys(extra).length ? extra : "");
 }
 
-function sanitizeJSON(text) {
-  if (!text) return "";
-  return text
-    .replace(/```/g, "")
-    .replace(/json/g, "")
-    .replace(/\n/g, "\n")
-    .trim();
+async function uploadBuffer(buffer, folder, name = "img") {
+  return cloudinary.uploader.upload(`data:image/jpeg;base64,${buffer.toString("base64")}`, {
+    folder,
+    public_id: `${name}-${Date.now()}`,
+  });
+}
+
+async function uploadUrl(url, folder, name = "upload") {
+  return cloudinary.uploader.upload(url, {
+    folder,
+    public_id: `${name}-${Date.now()}`,
+  });
 }
 
 function buildShopifyGID(id) {
@@ -74,380 +61,298 @@ function buildShopifyGID(id) {
   return `gid://shopify/Product/${id}`;
 }
 
-// ======================================================
-// CLOUDINARY HELPERS
-// ======================================================
-
-async function uploadBufferToCloudinary(buffer, folder, name = "image") {
-  return new Promise((resolve, reject) => {
-    cloudinary.uploader.upload(
-      `data:image/jpeg;base64,${buffer.toString("base64")}`,
-      {
-        folder,
-        public_id: `${name}-${Date.now()}`
-      },
-      (err, result) => {
-        if (err) return reject(err);
-        resolve(result);
-      }
-    );
-  });
-}
-
-async function uploadUrlToCloudinary(url, folder, name = "image-url") {
-  return new Promise((resolve, reject) => {
-    cloudinary.uploader.upload(
-      url,
-      {
-        folder,
-        public_id: `${name}-${Date.now()}`
-      },
-      (err, result) => {
-        if (err) return reject(err);
-        resolve(result);
-      }
-    );
-  });
-}
-
-// ======================================================
-// SHOPIFY FETCH PRODUCT
-// ======================================================
-
-async function fetchProduct(productId) {
-  const gid = buildShopifyGID(productId);
-
+// ----------------------------
+// SHOPIFY HELPERS
+// ----------------------------
+async function fetchProductFromShopify(productId) {
   const query = `
     query GetProduct($id: ID!) {
       product(id: $id) {
         id
         title
-        featuredImage { url }
         description
-        productType
+        featuredImage { url }
       }
     }
   `;
 
-  const res = await fetch(`https://${SHOPIFY_STORE_DOMAIN}/api/2024-01/graphql.json`, {
+  const response = await fetch(`https://${SHOPIFY_STORE_DOMAIN}/api/2024-01/graphql.json`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-Shopify-Storefront-Access-Token": SHOPIFY_STOREFRONT_TOKEN
+      "X-Shopify-Storefront-Access-Token": SHOPIFY_STOREFRONT_TOKEN,
     },
-    body: JSON.stringify({ query, variables: { id: gid } })
+    body: JSON.stringify({ query, variables: { id: buildShopifyGID(productId) } }),
   });
 
-  const json = await res.json();
+  const json = await response.json();
 
-  if (!json.data || !json.data.product) {
-    throw new Error("No se pudo cargar el producto desde Shopify");
+  if (json.errors || !json.data?.product) {
+    throw new Error("Shopify no devolvió un producto");
   }
 
-  return {
-    id: json.data.product.id,
-    title: json.data.product.title,
-    featuredImage: json.data.product.featuredImage?.url || null,
-    productType: json.data.product.productType || "",
-    description: json.data.product.description || ""
-  };
+  return json.data.product;
 }
 
-// ======================================================
-// OPENAI — EMBEDDING DEL PRODUCTO
-// ======================================================
-
-async function buildProductEmbedding(product) {
-  if (!product.featuredImage) return null;
-
-  log("OpenAI: embedding del producto", { title: product.title });
+// ----------------------------
+// OPENAI – PRODUCT EMBEDDING
+// ----------------------------
+async function buildProductEmbedding(url, title) {
+  logStep("OpenAI: embedding del producto", { title });
 
   const prompt = `
-Analiza únicamente el producto de la imagen. 
-Devuelve SOLO un JSON puro, sin backticks, sin texto adicional, sin triple ticks.
-
-Formato EXACTO:
+Extrae SOLO un JSON válido con:
 {
-  "colors": ["color1", "color2"],
-  "materials": ["material1"],
-  "texture": "descripcion corta",
-  "pattern": "descripcion corta"
+  "colors": ["..."],
+  "materials": ["..."],
+  "texture": "string",
+  "pattern": "string"
 }
+Nada más.
 `;
 
-  const response = await openai.responses.create({
+  const result = await openai.responses.create({
     model: "gpt-4o-mini",
     input: [
       {
         role: "user",
         content: [
           { type: "input_text", text: prompt },
-          { type: "input_image", image_url: product.featuredImage }
-        ]
-      }
-    ]
+          { type: "input_image", image_url: url },
+        ],
+      },
+    ],
   });
 
-  const raw = sanitizeJSON(
-    response.output[0]?.content[0]?.text || 
-    response.output[0]?.content[0]?.content
-  );
+  const raw = result.output_text || result.output?.[0]?.content?.[0]?.text || "";
+
+  let clean = raw
+    .replace(/```json/g, "")
+    .replace(/```/g, "")
+    .trim();
 
   try {
-    return JSON.parse(raw);
+    return JSON.parse(clean);
   } catch (e) {
     console.error("Error parseando embedding:", raw);
     return null;
   }
 }
 
-// ======================================================
-// OPENAI — ANALYSIS ROOM + BOUNDING BOX
-// ======================================================
-
-async function analyzeRoom({ roomImageUrl, idea, productName }) {
-  log("OpenAI: análisis del cuarto");
+// ----------------------------
+// OPENAI – ROOM ANALYSIS
+// ----------------------------
+async function analyzeRoom(roomUrl, productUrl, productName, idea) {
+  logStep("OpenAI: análisis del cuarto");
 
   const prompt = `
-Devuelve SOLO un JSON exacto, sin texto adicional, sin backticks, sin triple ticks.
-
-Formato EXACTO:
+Devuelve SOLO un JSON válido con:
 {
-  "imageWidth": 1200,
-  "imageHeight": 800,
-  "roomStyle": "string",
-  "detectedAnchors": ["string"],
-  "placement": { "x": number, "y": number, "width": number, "height": number },
-  "conflicts": [],
-  "finalPlacement": { "x": number, "y": number, "width": number, "height": number }
+  "imageWidth": number,
+  "imageHeight": number,
+  "placement": { "x": number, "y": number, "width": number, "height": number }
 }
 
-Reglas:
-- NO describas muebles. Solo devuelve coordenadas.
-- Usa pixeles.
-- Si no puedes detectar bien, devuelve un rectángulo centrado.
-Idea del cliente: ${idea || "ninguna"}
-Producto: ${productName}
+La zona debe ser EXACTAMENTE donde debe ir el producto "${productName}".
+Respeta lo que el cliente dijo: "${idea || ""}".
 `;
 
-  const response = await openai.responses.create({
+  const result = await openai.responses.create({
     model: "gpt-4o-mini",
     input: [
       {
         role: "user",
         content: [
           { type: "input_text", text: prompt },
-          { type: "input_image", image_url: roomImageUrl }
-        ]
-      }
-    ]
+          { type: "input_image", image_url: roomUrl },
+          { type: "input_image", image_url: productUrl },
+        ],
+      },
+    ],
   });
 
-  const raw = sanitizeJSON(
-    response.output[0]?.content[0]?.text ||
-    response.output[0]?.content[0]?.content
-  );
+  const raw = result.output_text || result.output?.[0]?.content?.[0]?.text || "";
 
-  let data;
+  let clean = raw
+    .replace(/```json/g, "")
+    .replace(/```/g, "")
+    .trim();
+
+  let parsed;
   try {
-    data = JSON.parse(raw);
+    parsed = JSON.parse(clean);
   } catch (e) {
     console.error("Error parseando análisis:", raw);
-    throw new Error("OpenAI devolvió un JSON inválido para el análisis");
+    throw new Error("No se pudo analizar el cuarto");
   }
 
-  if (!data.finalPlacement || typeof data.finalPlacement.x !== "number") {
-    const w = data.imageWidth || 1200;
-    const h = data.imageHeight || 800;
-
-    data.finalPlacement = {
-      x: Math.round(w * 0.25),
-      y: Math.round(h * 0.20),
-      width: Math.round(w * 0.5),
-      height: Math.round(h * 0.5)
-    };
-  }
-
-  return data;
+  return parsed;
 }
 
-// ======================================================
-// GENERAR MÁSCARA
-// ======================================================
+// ----------------------------
+// MASK BUILDER
+// ----------------------------
+async function buildMask(analysis) {
+  const { imageWidth, imageHeight, placement } = analysis;
+  const mask = Buffer.alloc(imageWidth * imageHeight, 0);
 
-async function createMask(analysis) {
-  const { imageWidth, imageHeight, finalPlacement } = analysis;
-
-  const w = Math.max(1, imageWidth);
-  const h = Math.max(1, imageHeight);
-
-  const mask = Buffer.alloc(w * h, 0);
-
-  const { x, y, width, height } = finalPlacement;
+  const { x, y, width, height } = placement;
 
   for (let j = y; j < y + height; j++) {
-    if (j < 0 || j >= h) continue;
     for (let i = x; i < x + width; i++) {
-      if (i < 0 || i >= w) continue;
-      mask[j * w + i] = 255;
+      if (i >= 0 && j >= 0 && i < imageWidth && j < imageHeight) {
+        mask[j * imageWidth + i] = 255;
+      }
     }
   }
 
   return sharp(mask, {
-    raw: { width: w, height: h, channels: 1 }
-  })
-    .png()
-    .toBuffer()
-    .then(buf => buf.toString("base64"));
+    raw: { width: imageWidth, height: imageHeight, channels: 1 },
+  }).png().toBuffer();
 }
 
-// ======================================================
-// REPLICATE — INPAINTING
-// ======================================================
+// ----------------------------
+// REPLICATE INPAINTING
+// ----------------------------
+async function runReplicate(roomUrl, maskBase64, prompt) {
+  logStep("Replicate: generando imagen…");
 
-async function runReplicate({ roomImageUrl, maskBase64, prompt }) {
-  log("Replicate: generando imagen…");
-
-  const payload = {
-    version: REPLICATE_MODEL,
-    input: {
-      image: roomImageUrl,
-      mask: `data:image/png;base64,${maskBase64}`,
-      prompt: prompt,
-      strength: 1
-    }
-  };
-
-  const res = await fetch("https://api.replicate.com/v1/predictions", {
+  const response = await fetch("https://api.replicate.com/v1/predictions", {
     method: "POST",
     headers: {
-      "Authorization": `Token ${REPLICATE_API_TOKEN}`,
-      "Content-Type": "application/json"
+      Authorization: `Token ${REPLICATE_API_TOKEN}`,
+      "Content-Type": "application/json",
     },
-    body: JSON.stringify(payload)
+    body: JSON.stringify({
+      version: REPLICATE_MODEL,
+      input: {
+        image: roomUrl,
+        mask: `data:image/png;base64,${maskBase64}`,
+        prompt,
+      },
+    }),
   });
 
-  let pred = await res.json();
+  const json = await response.json();
 
-  while (pred.status === "starting" || pred.status === "processing") {
-    await new Promise(r => setTimeout(r, 2000));
-    const poll = await fetch(`https://api.replicate.com/v1/predictions/${pred.id}`, {
-      headers: { "Authorization": `Token ${REPLICATE_API_TOKEN}` }
-    });
-    pred = await poll.json();
-  }
-
-  if (pred.status !== "succeeded") {
-    console.error("Replicate error:", pred);
+  if (json.error) {
+    console.error("Replicate error:", json);
     throw new Error("Replicate no pudo generar imagen");
   }
 
-  return Array.isArray(pred.output) ? pred.output[0] : pred.output;
+  // Polling
+  let prediction = json;
+  while (prediction.status === "starting" || prediction.status === "processing") {
+    await new Promise((r) => setTimeout(r, 2500));
+    const poll = await fetch(`https://api.replicate.com/v1/predictions/${json.id}`, {
+      headers: { Authorization: `Token ${REPLICATE_API_TOKEN}` },
+    });
+    prediction = await poll.json();
+  }
+
+  if (prediction.status !== "succeeded") {
+    console.error("Replicate final:", prediction);
+    throw new Error("Replicate falló");
+  }
+
+  return prediction.output?.[0] || null;
 }
 
-// ======================================================
+// ----------------------------
 // COPY EMOCIONAL
-// ======================================================
-
-function buildCopy({ roomStyle, productName, idea }) {
-  let msg = `Diseñamos esta propuesta respetando el estilo de tu espacio (${roomStyle}). `;
-  msg += `Integrando ${productName} como protagonista, logramos una composición equilibrada y natural. `;
-  if (idea) msg += `También consideramos tu idea: “${idea}”. `;
-  msg += `Así puedes visualizarlo antes de tomar una decisión.`;
-  return msg;
+// ----------------------------
+function buildCopy(productName, idea) {
+  let txt = `Integramos ${productName} en tu espacio visualizando cómo aportaría estilo y armonía.`;
+  if (idea) txt += ` Tomamos en cuenta tu idea: "${idea}".`;
+  return txt;
 }
 
-// ======================================================
+// ----------------------------
 // ENDPOINT PRINCIPAL
-// ======================================================
-
+// ----------------------------
 app.post("/experiencia-premium", upload.single("roomImage"), async (req, res) => {
   const start = Date.now();
   try {
-    log("Nueva experiencia-premium recibida");
+    logStep("Nueva experiencia-premium recibida");
 
-    const file = req.file;
-    const { productId, productName, productUrl, idea } = req.body;
+    const { productId, productName: clientName, idea } = req.body;
+    if (!req.file) return res.status(400).json({ error: "Falta imagen" });
 
-    if (!file) throw new Error("Falta roomImage");
-    if (!productId) throw new Error("Falta productId");
-
-    // 1) Subir room
-    const roomUpload = await uploadBufferToCloudinary(file.buffer, "innotiva/rooms", "room");
+    // 1) Subir foto del cuarto
+    const roomUpload = await uploadBuffer(
+      req.file.buffer,
+      "innotiva/rooms",
+      "room"
+    );
     const roomUrl = roomUpload.secure_url;
 
-    // 2) Producto completo desde Shopify
-    const product = await fetchProduct(productId);
-    const finalProductName = productName || product.title;
+    // 2) Producto desde Shopify
+    const product = await fetchProductFromShopify(productId);
+    const realProductName = clientName || product.title;
+    const productImageUrl = product.featuredImage?.url;
 
-    // 3) Embedding
-    const embedding = await buildProductEmbedding(product);
+    if (!productImageUrl) throw new Error("El producto no tiene imagen");
 
-    // 4) Análisis
-    const analysis = await analyzeRoom({
-      roomImageUrl: roomUrl,
-      idea,
-      productName: finalProductName
-    });
+    // 3) Embedding del producto
+    const embedding = await buildProductEmbedding(productImageUrl, realProductName);
+
+    // 4) Análisis del cuarto
+    const analysis = await analyzeRoom(roomUrl, productImageUrl, realProductName, idea);
 
     // 5) Máscara
-    const mask = await createMask(analysis);
+    const mask = await buildMask(analysis);
+    const maskBase64 = mask.toString("base64");
 
-    // 6) Prompt final Replicate
-    const repPrompt = `
-Inserta el producto ${finalProductName} en la zona indicada.
-Mantén la habitación intacta.
-Respeta perspectiva, iluminación y colores reales.
-Producto:
-${JSON.stringify(embedding || {}, null, 2)}
+    // 6) Prompt para Replicate
+    const replicatePrompt = `
+Inserta "${realProductName}" exactamente en el área seleccionada.
+Respeta completamente la habitación, iluminación y estilo.
+Producto: ${realProductName}
+Detalles: ${JSON.stringify(embedding)}
 `;
 
-    // 7) Replicate
-    const generatedUrl = await runReplicate({
-      roomImageUrl: roomUrl,
-      maskBase64: mask,
-      prompt: repPrompt
-    });
+    // 7) Llamar a Replicate
+    const generatedUrl = await runReplicate(
+      roomUrl,
+      maskBase64,
+      replicatePrompt
+    );
 
-    // 8) Upload final a Cloudinary
-    const finalUpload = await uploadUrlToCloudinary(generatedUrl, "innotiva/generated", "after");
-    const finalUrl = finalUpload.secure_url;
+    if (!generatedUrl) throw new Error("Replicate no devolvió imagen");
 
-    // 9) Copy emocional
-    const message = buildCopy({
-      roomStyle: analysis.roomStyle,
-      productName: finalProductName,
-      idea
-    });
+    // 8) Subir resultado final a Cloudinary
+    const genUpload = await uploadUrl(
+      generatedUrl,
+      "innotiva/generated",
+      "generated"
+    );
+
+    const resultUrl = genUpload.secure_url;
+
+    // 9) Mensaje
+    const message = buildCopy(realProductName, idea);
 
     // 10) Respuesta final
-    const payload = {
+    res.json({
       status: "success",
       sessionId: crypto.randomUUID(),
       userImageUrl: roomUrl,
-      generatedImageUrl: finalUrl,
-      productUrl: productUrl || null,
-      productName: finalProductName,
+      generatedImageUrl: resultUrl,
+      productName: realProductName,
       message,
       analysis,
-      createdAt: new Date().toISOString()
-    };
-
-    log("EXPERIENCIA GENERADA OK", { ms: Date.now() - start });
-    res.json(payload);
+      embedding,
+      elapsedMs: Date.now() - start,
+    });
 
   } catch (err) {
     console.error("Error en /experiencia-premium:", err);
     res.status(500).json({
       status: "error",
-      message: "No se pudo generar la propuesta. Intenta nuevamente."
+      message: "Hubo un problema generando tu propuesta.",
     });
   }
 });
-
-// ======================================================
-// RUN SERVER
-// ======================================================
 
 app.listen(PORT, () => {
   console.log(`🚀 INNOTIVA BACKEND PRO escuchando en puerto ${PORT}`);
