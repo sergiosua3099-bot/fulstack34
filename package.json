@@ -1,7 +1,7 @@
 {
   "name": "innotiva-backend-singlefile",
   "version": "1.0.0",
-  "description": "Backend IA Innotiva — Replicate FLUX 1.1 Pro · Cloudinary · Shopify",
+  "description": "Backend IA Innotiva — FLUX 1.1 Pro + Cloudinary + Shopify",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
