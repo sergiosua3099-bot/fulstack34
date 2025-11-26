@@ -378,7 +378,7 @@ Rules:
   return promptBase.trim();
 }
 
-// Negative prompt para limpiar la imagen
+// Negative prompt (ahora no lo pasamos al modelo FLUX, pero lo dejamos por si lo quieres usar)
 function construirNegativePromptPro() {
   return [
     "low quality",
@@ -410,8 +410,7 @@ function construirNegativePromptPro() {
 }
 
 // ==========================
-// Llamada a Replicate (Plan A1)
-// Modelo: sdxl-controlnet-lora-inpaint usado en modo img2img
+// Llamada a Replicate (Plan A1) con FLUX 1.1 PRO
 // ==========================
 async function generarImagenIA(roomImageUrl, productName, idea) {
   if (!process.env.REPLICATE_API_TOKEN) {
@@ -419,38 +418,44 @@ async function generarImagenIA(roomImageUrl, productName, idea) {
     return "https://via.placeholder.com/1024x1024?text=Propuesta+IA";
   }
 
+  // FLUX 1.1 [pro] estándar en Replicate
+  // Puedes sobreescribir con REPLICATE_ROOM_MODEL_ID o REPLICATE_MODEL_ID si quieres otro modelo.
   const modelId =
     process.env.REPLICATE_ROOM_MODEL_ID ||
     process.env.REPLICATE_MODEL_ID ||
-    "fermatresearch/sdxl-controlnet-lora-inpaint:3e35219f1da5affc9b51e04a0f0d1aab8c69c8b95aa40e37bab2dbba314b83a0";
+    "black-forest-labs/flux-1.1-pro";
 
   const prompt = construirPromptPro(productName, idea);
-  const negativePrompt = construirNegativePromptPro();
+  // const negativePrompt = construirNegativePromptPro(); // si en algún momento el modelo soporta negative_prompt
 
   try {
-    const output = await replicate.run(modelId, {
-      input: {
-        prompt,
-        negative_prompt: negativePrompt,
-        // 🔥 CAMBIO ÚNICO: el modelo espera "input_image"
-        input_image: roomImageUrl,
-        // Modo img2img: fuerza baja para respetar la foto original
-        prompt_strength: 0.42, // 0.8 = destruye; aquí mantenemos bastante del cuarto
-        num_inference_steps: 35,
-        guidance_scale: 7,
-        num_outputs: 1,
-        // scheduler: "KarrasDPM", // opcional, dejamos default del modelo
-      },
-    });
+    const input = {
+      prompt,
+      aspect_ratio: "3:2",        // encaja bien con tus cajas 500x300 aprox
+      output_format: "webp",
+      output_quality: 80,
+      safety_tolerance: 2,
+      num_outputs: 1,
+
+      // Usamos la foto del cliente como guía de composición
+      image_prompt: roomImageUrl,
+      image_prompt_strength: 0.35, // cuánto manda la foto vs el prompt
+      prompt_upsampling: false,
+      // Si el modelo llegara a soportar negative_prompt en Replicate:
+      // negative_prompt: negativePrompt,
+    };
+
+    const output = await replicate.run(modelId, { input });
 
     if (Array.isArray(output) && output.length > 0) {
+      // FLUX suele devolver un array de URLs
       return output[0];
     }
 
     console.warn("⚠️ Replicate devolvió salida vacía:", output);
     return "https://via.placeholder.com/1024x1024?text=Propuesta+IA";
   } catch (err) {
-    console.error("Error llamando a Replicate SDXL (A1):", err);
+    console.error("Error llamando a Replicate FLUX 1.1 PRO:", err);
     return "https://via.placeholder.com/1024x1024?text=Propuesta+IA";
   }
 }
@@ -461,7 +466,7 @@ async function generarImagenIA(roomImageUrl, productName, idea) {
 
 // Healthcheck
 app.get("/", (req, res) => {
-  res.send("INNOTIVA BACKEND PRO ✅ con Replicate A1");
+  res.send("INNOTIVA BACKEND PRO ✅ con Replicate FLUX 1.1 Pro");
 });
 
 // Productos para el formulario
@@ -526,7 +531,7 @@ app.post(
         "room"
       );
 
-      // 2) Generar imagen IA con Replicate
+      // 2) Generar imagen IA con Replicate (FLUX 1.1 PRO)
       const generatedImageUrl = await generarImagenIA(
         userImageUrl,
         productName,
@@ -571,3 +576,4 @@ app.post(
 app.listen(PORT, () => {
   console.log(`🚀 INNOTIVA BACKEND PRO LISTO en puerto ${PORT}`);
 });
+
