@@ -1,5 +1,6 @@
 // ===========================================
 // BACKEND PRO INNOTIVA – VERSION FINAL 2025
+// Con FLUX Inpainting + OpenAI Vision
 // ===========================================
 
 require("dotenv").config();
@@ -35,7 +36,7 @@ const SHOPIFY_STORE_DOMAIN = process.env.SHOPIFY_STORE_DOMAIN;
 const SHOPIFY_STOREFRONT_TOKEN = process.env.SHOPIFY_STOREFRONT_TOKEN;
 
 const REPLICATE_API_TOKEN = process.env.REPLICATE_API_TOKEN;
-const REPLICATE_MODEL = process.env.REPLICATE_FLUX_MODEL_ID;
+const REPLICATE_MODEL = "black-forest-labs/flux-1-dev-inpainting";
 
 // ---------------------------
 // HELPERS
@@ -165,7 +166,7 @@ SOLO JSON.
           { type: "input_text", text: prompt },
           {
             type: "input_image",
-            image_url: { url: forceHttps(product.featuredImage) }
+            image_url: forceHttps(product.featuredImage) // ← CORRECTO
           }
         ]
       }
@@ -191,11 +192,6 @@ async function analyzeRoom(roomImageUrl, productImageUrl, productEmbedding, idea
 
   const prompt = `
 Analiza el estilo del cuarto y define:
-- anchors
-- ubicación ideal (placement)
-- finalPlacement
-
-Solo JSON:
 {
  "imageWidth": number,
  "imageHeight": number,
@@ -205,17 +201,21 @@ Solo JSON:
  "conflicts": [],
  "finalPlacement": {...}
 }
+SOLO JSON.
 `;
 
   const content = [
     { type: "input_text", text: prompt },
-    { type: "input_image", image_url: { url: forceHttps(roomImageUrl) } }
+    {
+      type: "input_image",
+      image_url: forceHttps(roomImageUrl)   // ← CORRECTO
+    }
   ];
 
   if (productImageUrl) {
     content.push({
       type: "input_image",
-      image_url: { url: forceHttps(productImageUrl) }
+      image_url: forceHttps(productImageUrl)  // ← CORRECTO
     });
   }
 
@@ -266,29 +266,29 @@ async function createMask(analysis) {
 // CALL REPLICATE – FLUX INPAINTING
 // ---------------------------
 
-async function callReplicate({ roomImageUrl, productImageUrl, maskBase64, productEmbedding, analysis, productName }) {
+async function callReplicate({ roomImageUrl, maskBase64, productName, productEmbedding }) {
   logStep("Replicate: generando imagen…");
 
   const prompt = `
 NO modifiques la habitación.
-NO alteres paredes, muebles, ventanas, luz ni colores existentes.
-Solo rellena la zona de la máscara.
-Inserta el producto ORIGINAL (${productName}) tal cual es:
-- misma forma
+NO alteres paredes, muebles, ventanas ni luz.
+Solo edita la zona de la máscara.
+
+Inserta el producto ORIGINAL "${productName}" tal cual es:
+- forma idéntica
+- proporciones reales
 - mismos colores
 - mismo material
-- misma proporción
 
-Integración natural, realista.
-
-Detalles del producto:
-${JSON.stringify(productEmbedding)}
+NO interpretes el producto. Usa su aspecto real.
+Integración natural y realista.
 `;
 
   const payload = {
     image: forceHttps(roomImageUrl),
     mask: `data:image/png;base64,${maskBase64}`,
-    prompt
+    prompt: prompt,
+    strength: 1
   };
 
   const res = await fetch("https://api.replicate.com/v1/predictions", {
@@ -307,14 +307,17 @@ ${JSON.stringify(productEmbedding)}
 
   while (json.status === "starting" || json.status === "processing") {
     await new Promise(r => setTimeout(r, 2000));
-    const poll = await fetch(`https://api.replicate.com/v1/predictions/${json.id}`, {
-      headers: { "Authorization": `Token ${REPLICATE_API_TOKEN}` }
-    });
+
+    const poll = await fetch(
+      `https://api.replicate.com/v1/predictions/${json.id}`,
+      { headers: { "Authorization": `Token ${REPLICATE_API_TOKEN}` } }
+    );
     json = await poll.json();
   }
 
   if (json.status !== "succeeded") {
-    throw new Error("Replicate no pudo generar la imagen");
+    console.error("Replicate fail:", json);
+    throw new Error("Replicate no generó la imagen.");
   }
 
   const out = Array.isArray(json.output) ? json.output[0] : json.output;
@@ -326,11 +329,11 @@ ${JSON.stringify(productEmbedding)}
 // ---------------------------
 
 function buildCopy(roomStyle, productName, idea) {
-  let text = `Creamos esta propuesta respetando el estilo de ${roomStyle}. `;
-  text += `Integramos ${productName} sin alterar tu espacio real. `;
-  if (idea) text += `Tuvimos en cuenta tu idea: "${idea}". `;
-  text += "Así puedes visualizar cómo se vería realmente.";
-  return text;
+  let msg = `Creamos esta propuesta respetando el estilo de ${roomStyle}. `;
+  msg += `Integramos ${productName} sin alterar tu espacio real. `;
+  if (idea) msg += `Consideramos tu idea: "${idea}". `;
+  msg += "Así puedes visualizar cómo se vería realmente.";
+  return msg;
 }
 
 // ---------------------------
@@ -354,7 +357,7 @@ app.post("/experiencia-premium", upload.single("roomImage"), async (req, res) =>
     const product = await fetchProductFromShopify(productId);
     const finalName = productName || product.title;
 
-    // 3) Recorte PRO del producto
+    // 3) Recorte PRO del producto (solo para análisis)
     const cut = await uploadUrlToCloudinary(
       forceHttps(product.featuredImage),
       "innotiva/products/raw",
@@ -386,11 +389,9 @@ app.post("/experiencia-premium", upload.single("roomImage"), async (req, res) =>
     // 7) Generar con Replicate
     const generatedUrl = await callReplicate({
       roomImageUrl,
-      productImageUrl: productCutoutUrl,
       maskBase64,
-      productEmbedding: embedding,
-      analysis,
-      productName: finalName
+      productName: finalName,
+      productEmbedding: embedding
     });
 
     // 8) Subir resultado a Cloudinary
@@ -430,3 +431,4 @@ app.post("/experiencia-premium", upload.single("roomImage"), async (req, res) =>
 app.listen(PORT, () => {
   console.log(`🚀 INNOTIVA BACKEND PRO escuchando en puerto ${PORT}`);
 });
+
