@@ -39,7 +39,7 @@ const SHOPIFY_STORE_DOMAIN = process.env.SHOPIFY_STORE_DOMAIN;
 const SHOPIFY_STOREFRONT_TOKEN = process.env.SHOPIFY_STOREFRONT_TOKEN;
 
 const REPLICATE_API_TOKEN = process.env.REPLICATE_API_TOKEN;
-const REPLICATE_MODEL = "black-forest-labs/flux-1-dev-inpainting";
+const REPLICATE_MODEL = "stability-ai/stable-diffusion-xl-inpainting-0.1";
 
 // ======================================================
 // MIDDLEWARE
