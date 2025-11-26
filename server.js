@@ -1,7 +1,9 @@
-/**************************************************
- INNOTIVA BACKEND — VERSION B (Balanced Quality)
- FLUX 1.1 PRO via Replicate
-**************************************************/
+// server.js
+// Backend Innotiva - Versión PRO con FLUX 1.1 Pro (Replicate)
+// Rutas clave:
+//  - GET  /                  (healthcheck)
+//  - GET  /productos-shopify
+//  - POST /experiencia-premium  (recibe roomImage, productId, productName, productUrl?, idea)
 
 require("dotenv").config();
 const express = require("express");
@@ -12,7 +14,7 @@ const cloudinary = require("cloudinary").v2;
 const Replicate = require("replicate");
 
 // ==========================
-// BASE APP
+// Config base
 // ==========================
 const app = express();
 const PORT = process.env.PORT || 10000;
@@ -21,18 +23,36 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Multer para la foto del cliente
 const upload = multer({ storage: multer.memoryStorage() });
 
-// ==========================
-// CLOUDINARY
-// ==========================
+// Cloudinary
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
   api_key: process.env.CLOUDINARY_API_KEY,
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
-async function uploadBufferToCloudinary(buffer, folder, prefix) {
+// Replicate (FLUX 1.1 Pro)
+const replicate = new Replicate({
+  auth: process.env.REPLICATE_API_TOKEN,
+});
+
+// Shopify
+const SHOPIFY_STORE_DOMAIN =
+  process.env.SHOPIFY_STORE_DOMAIN || "innotiva-vision.myshopify.com";
+
+const SHOPIFY_STOREFRONT_TOKEN =
+  process.env.SHOPIFY_STOREFRONT_TOKEN ||
+  process.env.SHOPIFY_STOREFRONT_ACCESS_TOKEN ||
+  "";
+
+// ==========================
+// Helpers
+// ==========================
+
+// Subir buffer a Cloudinary y devolver URL segura
+function uploadBufferToCloudinary(buffer, folder, prefix) {
   return new Promise((resolve, reject) => {
     const stream = cloudinary.uploader.upload_stream(
       {
@@ -49,31 +69,31 @@ async function uploadBufferToCloudinary(buffer, folder, prefix) {
   });
 }
 
-// ==========================
-// SHOPIFY
-// ==========================
-const SHOPIFY_STORE_DOMAIN =
-  process.env.SHOPIFY_STORE_DOMAIN || "innotiva-vision.myshopify.com";
-const SHOPIFY_STOREFRONT_TOKEN =
-  process.env.SHOPIFY_STOREFRONT_TOKEN || "";
-
-// obtiene productos con imágenes y título
+// Obtener productos desde Shopify para el formulario
 async function getShopifyProducts() {
+  if (!SHOPIFY_STOREFRONT_TOKEN) {
+    console.warn(
+      "⚠️ SHOPIFY_STOREFRONT_TOKEN no definido. La llamada GraphQL puede fallar."
+    );
+  }
+
   const endpoint = `https://${SHOPIFY_STORE_DOMAIN}/api/2024-01/graphql.json`;
 
   const query = `
     {
-      products(first: 80) {
+      products(first: 50) {
         edges {
           node {
             id
-            title
             handle
+            title
             description
+            onlineStoreUrl
             images(first: 1) {
               edges {
                 node {
                   url
+                  altText
                 }
               }
             }
@@ -83,271 +103,525 @@ async function getShopifyProducts() {
     }
   `;
 
-  const headers = { "Content-Type": "application/json" };
+  const headers = {
+    "Content-Type": "application/json",
+  };
+
   if (SHOPIFY_STOREFRONT_TOKEN) {
     headers["X-Shopify-Storefront-Access-Token"] = SHOPIFY_STOREFRONT_TOKEN;
   }
 
-  const r = await fetch(endpoint, {
+  const resp = await fetch(endpoint, {
     method: "POST",
     headers,
     body: JSON.stringify({ query }),
   });
 
-  if (!r.ok) {
-    throw new Error(`Error Shopify: ${r.status} ${r.statusText}`);
+  if (!resp.ok) {
+    const txt = await resp.text();
+    console.error("Error Shopify:", resp.status, txt);
+    throw new Error("No se pudieron obtener los productos de Shopify");
   }
 
-  const json = await r.json();
+  const json = await resp.json();
   const edges = json?.data?.products?.edges || [];
 
-  return edges.map((e) => {
-    const n = e.node;
-    const imgEdge = n.images?.edges?.[0];
+  const products = edges.map((edge) => {
+    const node = edge.node;
+    const imgEdge = node.images?.edges?.[0];
+    const img = imgEdge?.node;
+    const imageUrl =
+      img?.url || "https://via.placeholder.com/400x400?text=Producto";
+
+    const handle = node.handle;
+    const url =
+      node.onlineStoreUrl ||
+      `https://${SHOPIFY_STORE_DOMAIN}/products/${handle}`;
+
     return {
-      id: n.id, // id global GraphQL
-      title: n.title,
-      handle: n.handle,
-      description: n.description,
-      image: imgEdge?.node?.url || null,
-      url: `/products/${n.handle}`,
+      id: handle, // usamos el handle como ID que viaja al front
+      handle,
+      title: node.title,
+      description: node.description || "",
+      image: imageUrl,
+      url,
     };
   });
+
+  return products;
 }
 
+// Buscar un producto concreto por id/handle reutilizando la lista
 async function obtenerProductoPorId(productId) {
-  // productId que viene del front es el ID numérico de Shopify (product.id)
-  // en este backend usamos handle y título, así que buscamos por handle o incluimos fallback
-  const products = await getShopifyProducts();
+  try {
+    const products = await getShopifyProducts();
+    if (!products || !products.length) return null;
 
-  // Primero intentar match exacto por handle (si lo estás mandando así),
-  // luego por inclusión en id, y si no encuentra, null.
-  const encontrado =
-    products.find((p) => String(p.id).includes(String(productId))) || null;
+    const target = String(productId || "").trim();
 
-  return encontrado;
+    const found = products.find((p) => {
+      if (!p) return false;
+      const id = String(p.id || "").trim();
+      const handle = String(p.handle || "").trim();
+      return id === target || handle === target;
+    });
+
+    return found || null;
+  } catch (err) {
+    console.warn("No se pudo obtener producto desde Shopify:", err);
+    return null;
+  }
 }
 
-// ==========================
-// IA — FLUX 1.1 PRO (Replicate)
-// ==========================
+// Recorte rápido de fondo con Replicate (opcional, B1)
+// Si REPLICATE_BG_MODEL_ID no está definido, simplemente no hace nada.
+async function removerFondoProducto(productImageUrl) {
+  const bgModelId = process.env.REPLICATE_BG_MODEL_ID;
 
-const replicate = new Replicate({
-  auth: process.env.REPLICATE_API_TOKEN,
-});
-
-/**
- * Construye un prompt muy profesional para decoración de interiores.
- */
-function construirPromptPro(roomImageUrl, productName, idea) {
-  const ideaLimpia = (idea || "").trim();
-
-  const instruccionUsuario = ideaLimpia
-    ? `El cliente indicó: "${ideaLimpia}". Respeta esta indicación al ubicar el producto.`
-    : "Si el cliente no dio indicaciones, elige la ubicación con mejor composición visual y equilibrio.";
-
-  return `
-Fotografía profesional de diseño de interiores, hiperrealista, iluminación suave y natural.
-
-Escena: un dormitorio / sala contemporánea, paredes claras, sensación de calma y elegancia minimalista.
-Debe verse como una fotografía real de catálogo de una marca premium.
-
-Producto protagonista: "${productName}" integrado en el espacio de forma natural, con proporción correcta,
-perspectiva coherente y sombras realistas.
-
-${instruccionUsuario}
-
-Estilo visual:
-- Colores neutros y cálidos, coherentes con un hogar moderno.
-- Detalles nítidos en texturas (madera, tela, pared).
-- Nada recargado: composición limpia, sofisticada y aspiracional.
-
-Cámara:
-- Fotografía recta u ligeramente en ángulo, sin distorsiones exageradas.
-- Calidad 4K, alto nivel de detalle, sin ruido.
-
-NO añadir texto, logos, marcas de agua ni elementos ajenos a decoración de interiores.
-  `.trim();
-}
-
-function construirNegativePromptPro() {
-  return `
-baja calidad, borroso, deformado, perspectiva rara, manos, personas, cuerpos, texto, letras,
-logo, marca de agua, glitch, arte digital, caricatura, anime, 3d cartoon, saturación extrema,
-objetos flotando, proporciones irreales, distorsión tipo ojo de pez, cámaras múltiples, frames dobles
-  `.trim();
-}
-
-/**
- * Llama a FLUX 1.1 PRO en Replicate
- * Importante: FLUX 1.1 PRO es un modelo texto → imagen.
- * Usamos la foto del cliente sólo como contexto de negocio, pero la generación es desde prompt.
- */
-async function generarImagenIA(roomImageUrl, productName, idea) {
-  if (!process.env.REPLICATE_API_TOKEN) {
-    console.warn("⚠️ Falta REPLICATE_API_TOKEN, devolviendo placeholder");
-    return "https://via.placeholder.com/1024x1024?text=Configura+REPLICATE_API_TOKEN";
+  if (!bgModelId) {
+    console.warn(
+      "⚠️ REPLICATE_BG_MODEL_ID no definido. Se omite el recorte de producto."
+    );
+    return null;
   }
 
-  const model =
-    process.env.REPLICATE_FLUX_MODEL_ID || "black-forest-labs/flux-1.1-pro";
-
-  const prompt = construirPromptPro(roomImageUrl, productName, idea);
-  const negativePrompt = construirNegativePromptPro();
-
-  console.log("🧠 Llamando a Replicate FLUX 1.1 PRO con modelo:", model);
-
   try {
-    const output = await replicate.run(model, {
+    const output = await replicate.run(bgModelId, {
       input: {
-        prompt,
-        negative_prompt: negativePrompt,
-        // parámetros típicos para FLUX
-        aspect_ratio: "3:4",
-        output_format: "png",
-        output_quality: 90,
-        num_inference_steps: 28,
-        guidance_scale: 3.5,
-        // num_outputs: 1  // por defecto 1
+        image: productImageUrl,
       },
     });
 
-    let imageUrl = null;
-
-    if (Array.isArray(output) && output.length > 0) {
-      imageUrl = output[0];
-    } else if (typeof output === "string") {
-      imageUrl = output;
-    } else if (
-      output &&
-      Array.isArray(output.output) &&
-      output.output.length > 0
-    ) {
-      imageUrl = output.output[0];
+    if (Array.isArray(output) && output.length > 0) return output[0];
+    if (typeof output === "string") return output;
+    if (output && typeof output === "object" && output.image) {
+      return output.image;
     }
 
-    if (!imageUrl) {
-      console.warn("⚠️ Replicate (FLUX) no devolvió URL de imagen:", output);
-      throw new Error("No image URL from Replicate");
-    }
-
-    console.log("✅ FLUX generó imagen:", imageUrl);
-    return imageUrl;
-  } catch (err) {
-    console.error("❌ ERROR FLUX IA:", err);
-    return "https://via.placeholder.com/1024x1024?text=Error+IA";
+    console.warn("No se pudo interpretar la salida de remover fondo:", output);
+    return null;
+  } catch (error) {
+    console.error("Error en removerFondoProducto:", error);
+    return null;
   }
 }
 
 // ==========================
-// Mensaje descripción IA
+// Mensaje para la página resultado
 // ==========================
-function generarMensajePersonalizado(name, idea) {
-  const ideaLimpia = (idea || "").trim();
+function generarMensajePersonalizado(productName, idea) {
+  let base = `La elección de "${productName}" encaja muy bien con el estilo de tu espacio. `;
 
-  const extra = ideaLimpia
-    ? `Tuvimos en cuenta tu indicación: “${ideaLimpia}”.`
-    : "Cuidamos la composición para que el espacio se vea limpio, equilibrado y acogedor.";
+  if (idea && idea.trim().length > 0) {
+    base += `Tuvimos en cuenta tu comentario: “${idea.trim()}” para ajustar la composición y el lugar del producto. `;
+  } else {
+    base +=
+      "Buscamos una composición equilibrada y minimalista para que el producto destaque sin recargar el ambiente. ";
+  }
 
-  return `
-Hemos preparado una visualización con **${name}** integrada en tu espacio
-para que puedas tomar una decisión con calma antes de invertir.
+  base +=
+    "Esta visualización está pensada para ayudarte a tomar decisiones con más confianza, viendo cómo se transforma tu espacio antes de comprar.";
 
-${extra}
-`.trim();
+  return base;
 }
 
 // ==========================
-// RUTAS
+// Deducción del tipo de producto
 // ==========================
-app.get("/", (req, res) =>
-  res.send("INNOTIVA — Backend FLUX 1.1 PRO Running ✔")
-);
+function inferirTipoProducto(productName) {
+  const name = (productName || "").toLowerCase();
 
+  if (name.includes("espejo") || name.includes("mirror")) return "espejo";
+  if (
+    name.includes("lámpara") ||
+    name.includes("lampara") ||
+    name.includes("lamp")
+  )
+    return "lampara";
+  if (
+    name.includes("estante") ||
+    name.includes("repisa") ||
+    name.includes("shelf")
+  )
+    return "estante";
+  if (name.includes("planta") || name.includes("plant")) return "planta";
+  if (
+    name.includes("alfombra") ||
+    name.includes("tapete") ||
+    name.includes("rug")
+  )
+    return "alfombra";
+  if (
+    name.includes("cojín") ||
+    name.includes("cojin") ||
+    name.includes("pillow") ||
+    name.includes("cushion")
+  )
+    return "cojin";
+  if (name.includes("cortina") || name.includes("curtain")) return "cortina";
+  if (name.includes("reloj") || name.includes("clock")) return "reloj";
+
+  if (
+    name.includes("cuadro") ||
+    name.includes("poster") ||
+    name.includes("print") ||
+    name.includes("marco") ||
+    name.includes("frame") ||
+    name.includes("lienzo") ||
+    name.includes("canvas")
+  ) {
+    return "cuadro";
+  }
+
+  return "decoracion";
+}
+
+// ==========================
+// Prompt PRO para FLUX 1.1 Pro
+// ==========================
+function construirPromptPro(productName, productDescription, idea) {
+  const tipo = inferirTipoProducto(productName);
+  const cleanName = (productName || "").trim();
+  const cleanDesc = (productDescription || "").trim();
+  const cleanIdea = (idea || "").trim();
+
+  let contextoEspacio = "interior moderno, limpio y bien iluminado";
+  let instruccionProducto = "";
+
+  switch (tipo) {
+    case "espejo":
+      contextoEspacio =
+        "sala o recibidor contemporáneo con paredes claras y mobiliario neutro";
+      instruccionProducto = `
+Coloca un único espejo decorativo llamado "${cleanName}" en la pared más lógica y visible,
+alineado al mobiliario principal (sofá, consola, lavamanos o tocador),
+a una altura realista. Evita crear espejos adicionales o distorsiones en la pared.`;
+      break;
+
+    case "lampara":
+      contextoEspacio =
+        "sala o dormitorio acogedor con iluminación suave y muebles minimalistas";
+      instruccionProducto = `
+Añade una sola lámpara decorativa llamada "${cleanName}" (de pie, mesa o pared según lo que sugiere el diseño),
+ubicada en un punto natural del espacio (junto a un sofá, mesita de noche o consola),
+proyectando luz cálida y realista, sin inventar muebles nuevos.`;
+      break;
+
+    case "estante":
+      contextoEspacio =
+        "pared limpia y organizada en sala, estudio o dormitorio moderno";
+      instruccionProducto = `
+Coloca un solo estante o repisa llamado "${cleanName}" en una pared libre,
+perfectamente recto, a una altura coherente con la composición,
+con una cantidad mínima de objetos encima, sin saturar el entorno.`;
+      break;
+
+    case "planta":
+      contextoEspacio =
+        "sala o esquina luminosa de un interior contemporáneo, cercano a una ventana";
+      instruccionProducto = `
+Añade una única planta decorativa llamada "${cleanName}" en la zona más natural
+(cerca de una ventana, junto a un sofá o consola),
+integrada de forma sutil sin bloquear circulación ni luz.`;
+      break;
+
+    case "alfombra":
+      contextoEspacio =
+        "sala o dormitorio con piso visible, muebles claros y composición central";
+      instruccionProducto = `
+Coloca una sola alfombra llamada "${cleanName}" en el piso, anclando el conjunto de muebles
+(debajo o parcialmente debajo de sofá, cama o mesa de centro),
+respetando las proporciones reales del espacio. No inventes muebles nuevos.`;
+      break;
+
+    case "cojin":
+      contextoEspacio =
+        "sofá o cama principal en un interior acogedor y minimalista";
+      instruccionProducto = `
+Añade cojines decorativos llamados "${cleanName}" únicamente sobre el sofá o la cama principal,
+organizados de forma armónica y sin crear muebles adicionales.
+No dupliques el sofá ni crees estructuras nuevas.`;
+      break;
+
+    case "cortina":
+      contextoEspacio =
+        "ventana realista en un dormitorio o sala moderna, con luz natural";
+      instruccionProducto = `
+Coloca unas cortinas llamadas "${cleanName}" en la(s) ventana(s) más lógica(s),
+con caída natural y textura realista,
+coherentes con la dirección de la luz existente.`;
+      break;
+
+    case "reloj":
+      contextoEspacio =
+        "pared limpia y visible en sala, comedor o estudio contemporáneo";
+      instruccionProducto = `
+Añade un único reloj de pared llamado "${cleanName}" en una zona visible,
+alineado con líneas de muebles y marcos,
+sin crear más relojes ni objetos extra.`;
+      break;
+
+    case "cuadro":
+      contextoEspacio =
+        "pared principal de sala, comedor o dormitorio con mobiliario neutro";
+      instruccionProducto = `
+Coloca un solo cuadro / marco / lámina llamado "${cleanName}" en la pared dominante,
+generalmente centrado sobre el sofá, la cama o la consola,
+con tamaño y proporciones realistas, perfectamente recto. No añadas otros cuadros nuevos.`;
+      break;
+
+    default:
+      contextoEspacio =
+        "interior moderno y minimalista con paleta de colores suaves y mobiliario realista";
+      instruccionProducto = `
+Añade un único elemento decorativo llamado "${cleanName}" en la ubicación más lógica,
+integrado sutilmente en la escena sin rediseñar todo el espacio
+ni añadir demasiados objetos nuevos.`;
+      break;
+  }
+
+  const ideaTexto =
+    cleanIdea.length > 0
+      ? `Client guidance (español, respeta el significado): “${cleanIdea}”. Interpreta esto únicamente como una indicación sobre dónde y cómo ubicar el producto seleccionado, nunca como permiso para rediseñar todo el espacio.`
+      : "No hay indicación específica del cliente; elige la mejor ubicación posible para el producto respetando la composición general.";
+
+  const contextoProducto =
+    cleanDesc.length > 0
+      ? `Product details from catalog (short): ${cleanDesc}`
+      : "The product has a refined, premium design suitable for a modern, minimal interior.";
+
+  const reglas = `
+Rules (STRICT):
+- Crea exactamente UNA versión del producto seleccionado, sin copias duplicadas.
+- No inventes muebles grandes nuevos ni cambies la estructura general: mantén una composición creíble de interior moderno.
+- No incluyas texto, logos, marcas de agua ni tipografía visible en la imagen.
+- Mantén una iluminación suave y premium, estilo catálogo de decoración escandinava / high-end.
+- Respeta una paleta limpia, evitando colores saturados que rompan el estilo del espacio.
+- No añadas personajes, personas ni animales.
+- El foco principal de la escena debe ser el producto "${cleanName}" integrado en un interior realista y aspiracional.
+`;
+
+  const promptBase = `
+Ultra detailed, photorealistic interior photograph, ${contextoEspacio}.
+Cámara estable, encuadre natural, sensación de foto tomada para un catálogo de decoración premium.
+
+${instruccionProducto}
+
+${ideaTexto}
+
+${contextoProducto}
+
+${reglas}
+`;
+
+  return promptBase.trim();
+}
+
+// Negative prompt para limpiar la imagen
+function construirNegativePromptPro() {
+  return [
+    "low quality",
+    "blurry",
+    "distorted",
+    "deformed",
+    "wrong perspective",
+    "warped walls",
+    "warped furniture",
+    "surreal",
+    "fantasy",
+    "cartoon",
+    "illustration",
+    "3d render",
+    "extra limbs",
+    "extra objects",
+    "duplicate furniture",
+    "duplicate objects",
+    "multiple copies of product",
+    "text",
+    "logo",
+    "watermark",
+    "overexposed",
+    "underexposed",
+    "grainy",
+    "noisy",
+    "fisheye",
+    "extreme wide angle",
+  ].join(", ");
+}
+
+// ==========================
+// Llamada a Replicate (FLUX 1.1 Pro) - Texto a imagen
+// ==========================
+async function generarImagenIA(roomImageUrl, productName, productDescription, idea) {
+  if (!process.env.REPLICATE_API_TOKEN) {
+    console.warn("⚠️ REPLICATE_API_TOKEN no definido. Devolviendo placeholder.");
+    return "https://via.placeholder.com/1024x1024?text=Propuesta+IA";
+  }
+
+  const modelId =
+    process.env.REPLICATE_FLUX_MODEL_ID ||
+    "black-forest-labs/flux-1.1-pro";
+
+  const prompt = construirPromptPro(productName, productDescription, idea);
+  const negativePrompt = construirNegativePromptPro();
+
+  try {
+    const output = await replicate.run(modelId, {
+      input: {
+        prompt,
+        negative_prompt: negativePrompt,
+        width: 1024,
+        height: 1024,
+        num_outputs: 1,
+        guidance_scale: 4,
+        num_inference_steps: 28,
+        // FLUX 1.1 Pro es solo texto->imagen, no usamos roomImageUrl como conditioning real.
+      },
+    });
+
+    // Manejo flexible: array, string o campo output
+    if (Array.isArray(output) && output.length > 0) {
+      return output[0];
+    }
+
+    if (typeof output === "string") {
+      return output;
+    }
+
+    if (output && Array.isArray(output.output) && output.output[0]) {
+      return output.output[0];
+    }
+
+    console.warn("⚠️ Replicate (FLUX) devolvió salida inesperada:", output);
+    return "https://via.placeholder.com/1024x1024?text=Propuesta+IA";
+  } catch (err) {
+    console.error("Error llamando a Replicate FLUX 1.1 PRO:", err);
+    return "https://via.placeholder.com/1024x1024?text=Propuesta+IA+Error";
+  }
+}
+
+// ==========================
+// Rutas
+// ==========================
+
+// Healthcheck
+app.get("/", (req, res) => {
+  res.send("INNOTIVA BACKEND PRO ✅ con FLUX 1.1 Pro");
+});
+
+// Productos para el formulario
 app.get("/productos-shopify", async (req, res) => {
   try {
     const products = await getShopifyProducts();
-    res.json({ success: true, products });
-  } catch (e) {
-    console.error("Error listando productos Shopify:", e);
-    res.status(500).json({ success: false, error: e.message });
+    return res.json({ success: true, products });
+  } catch (err) {
+    console.error("ERR /productos-shopify:", err);
+    return res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// ==========================
-// MAIN ROUTE — IA ROOM
-// ==========================
+// Experiencia premium
 app.post(
   "/experiencia-premium",
   upload.single("roomImage"),
   async (req, res) => {
-    console.log("📩 Nueva solicitud POST /experiencia-premium");
-
+    console.log("📩 Nueva solicitud /experiencia-premium");
     try {
       if (!req.file) {
-        console.warn("❌ No llegó archivo de imagen");
-        return res.status(400).json({ error: "No llega imagen" });
+        return res.status(400).json({
+          success: false,
+          error: "Falta la imagen del espacio (roomImage)",
+        });
       }
-
-      console.log(
-        "🖼 file:",
-        req.file.mimetype,
-        req.file.size
-      );
 
       const { productId, productName, idea, productUrl } = req.body;
+
+      console.log("🖼 file:", req.file.mimetype, req.file.size);
       console.log("📦 body:", req.body);
 
-      // Opcional: buscar info extra en Shopify (no obligatorio para que funcione)
-      let productMeta = null;
-      try {
-        productMeta = await obtenerProductoPorId(productId);
-      } catch (e) {
-        console.warn("⚠️ No se pudo enriquecer producto desde Shopify:", e);
+      if (!productId || !productName) {
+        return res.status(400).json({
+          success: false,
+          error: "Faltan datos del producto (productId / productName)",
+        });
       }
 
-      // 1) Subimos la foto del cliente a Cloudinary
+      // Info extra del producto
+      let productImageUrl = null;
+      let productCutoutUrl = null;
+      let placementHint = null;
+      let productDescription = "";
+
+      try {
+        if (productName) {
+          placementHint = inferirTipoProducto(productName);
+        }
+
+        if (productId) {
+          const producto = await obtenerProductoPorId(productId);
+          if (producto) {
+            productImageUrl = producto.image || null;
+            productDescription = producto.description || "";
+            // recorte rápido opcional (B1)
+            if (productImageUrl) {
+              productCutoutUrl = await removerFondoProducto(productImageUrl);
+            }
+          }
+        }
+      } catch (metaErr) {
+        console.warn("No se pudo enriquecer la info del producto:", metaErr);
+      }
+
+      // 1) Subir la foto original del cliente a Cloudinary (para el "ANTES")
       const userImageUrl = await uploadBufferToCloudinary(
         req.file.buffer,
         "innotiva/rooms",
         "room"
       );
-      console.log("☁️ Imagen subida a Cloudinary:", userImageUrl);
 
-      // 2) Generamos imagen IA con FLUX 1.1 PRO (texto a imagen)
-      const nombreParaPrompt =
-        productMeta?.title || productName || "producto decorativo premium";
+      // 2) Generar imagen IA con FLUX (texto a imagen + contexto de producto)
       const generatedImageUrl = await generarImagenIA(
         userImageUrl,
-        nombreParaPrompt,
-        idea
+        productName,
+        productDescription,
+        idea || ""
       );
 
-      // 3) Respondemos al front
-      res.json({
+      // 3) URL final del producto
+      let finalProductUrl = productUrl || null;
+      if (!finalProductUrl) {
+        finalProductUrl = `https://${SHOPIFY_STORE_DOMAIN}/products/${productId}`;
+      }
+
+      // 4) Mensaje para la página resultado
+      const message = generarMensajePersonalizado(productName, idea);
+
+      // 5) Respuesta JSON para el front (sessionStorage en Shopify)
+      return res.json({
         success: true,
-        message: generarMensajePersonalizado(nombreParaPrompt, idea),
-        userImageUrl, // se muestra como "Antes"
-        generatedImageUrl, // se muestra como "Después (IA)"
-        productUrl:
-          productUrl ||
-          (productMeta
-            ? productMeta.url
-            : `https://${SHOPIFY_STORE_DOMAIN}/products/${productId}`),
-        productName: nombreParaPrompt,
+        message,
+        userImageUrl,
+        generatedImageUrl,
+        productUrl: finalProductUrl,
+        productName,
+        productId,
+        productImageUrl,
+        productCutoutUrl,
+        placementHint,
       });
     } catch (err) {
-      console.error("❌ Error en /experiencia-premium:", err);
-      res
-        .status(500)
-        .json({ success: false, error: "Error en flujo IA", details: err.message });
+      console.error("ERR /experiencia-premium:", err);
+      return res.status(500).json({
+        success: false,
+        error: "Error interno preparando la experiencia premium",
+      });
     }
   }
 );
 
 // ==========================
-// LAUNCH
+// Iniciar servidor
 // ==========================
-app.listen(PORT, () =>
-  console.log("🔥 Backend ONLINE · PUERTO:", PORT)
-);
+app.listen(PORT, () => {
+  console.log(`🚀 INNOTIVA BACKEND PRO LISTO en puerto ${PORT}`);
+});
