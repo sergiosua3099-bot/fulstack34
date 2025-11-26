@@ -210,6 +210,9 @@ async function generarImagenIA_FluxCuadro({ productName, idea }) {
     },
   });
 
+  // 👇👇👇 ÚNICA LÍNEA NUEVA QUE TE PEDÍAS QUE INSERTARA
+  console.log("🔍 SALIDA FLUX CRUDA:", JSON.stringify(output, null, 2));
+
   if (!output || !output.length) {
     console.warn("⚠️ Replicate (FLUX) devolvió salida vacía");
     throw new Error("Sin salida de FLUX");
@@ -356,4 +359,3 @@ app.post(
 app.listen(PORT, () => {
   console.log("🔥 Backend ONLINE · PUERTO:", PORT);
 });
-
