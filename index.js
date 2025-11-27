@@ -439,69 +439,62 @@ async function createMaskFromAnalysis(analysis) {
 
   return pngBuffer.toString("base64");
 }
+
 // ==================================================================================
-// 🔥 Replicate — Stable Diffusion XL INPAINTING (Ahora sí respeta la habitación)
+// SDXL INPAINT — (Funciona, respeta la habitación, inserta el producto real)
 // ==================================================================================
 async function callReplicateInpaint({ roomImageUrl, maskBase64, prompt, productCutoutUrl }) {
   try {
-    console.log("[INNOTIVA] 🧠 Replicate → SDXL Inpainting ACTIVADO");
+    console.log("🔵 [INNOTIVA] Replicate → SDXL Inpainting activo…");
 
     const body = {
-      version: "e5b04f838ba91a08c602ab2292e8a5c115489acd1657f3b2b33c36da99d1c308", // versión estable SDXL-INPAINT
+      model: "stability-ai/stable-diffusion-xl-inpainting", // << ESTE ES EL CORRECTO
       input: {
-        // FOTO BASE — habitación del cliente
-        image: roomImageUrl,
+        image: roomImageUrl,          // base: la habitación real
+        mask: maskBase64,             // máscara blanca donde puede editar
 
-        // MÁSCARA — zona donde se inserta el producto
-        mask: maskBase64,
+        // referencia del producto a incrustar
+        init_image: productCutoutUrl, // ahora sí lo reconocerá
+        prompt: prompt,
 
-        // REFERENCIA VISUAL — producto real recortado
-        init_image: productCutoutUrl,
+        // anti-destrucción del cuarto
+        negative_prompt: "room changed, new furniture, surreal, dreamlike, ai generated room, blurry, distorted",
 
-        prompt,                     // prompt que ya generas
-        negative_prompt: "rooms changed, new rooms, painting background, unrealistic objects, distortions, surreal",
-
-        // AJUSTES PARA RESPETO MÁXIMO A LA HABITACIÓN
-        strength: 0.35,             // menor = respeta más el cuarto
-        steps: 45,
-        guidance_scale: 7,
+        strength: 0.32,               // menor = respeta más la habitación
+        steps: 40,                    // más pasos = integración realista
+        guidance_scale: 7.0,          // equilibrio controlado
         seed: Math.floor(Math.random() * 999999999)
       }
     };
 
-    // 🚀 Enviar a Replicate
-    let prediction = await fetch(
-      "https://api.replicate.com/v1/predictions",
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${process.env.REPLICATE_API_TOKEN}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify(body)
-      }
-    ).then(r => r.json());
+    // crear predicción
+    let prediction = await fetch("https://api.replicate.com/v1/predictions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${process.env.REPLICATE_API_TOKEN}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(body)
+    }).then(r => r.json());
 
-    if (!prediction.id) throw new Error("❌ Replicate no inició la predicción");
+    if (!prediction.id) throw new Error("❌ No se creó la predicción — modelo o parámetros inválidos");
 
-    // 🔄 Polling hasta que termine
+    // poll hasta finalizar
     while (prediction.status !== "succeeded" && prediction.status !== "failed") {
-      await new Promise(res => setTimeout(res, 2200));
+      await new Promise(res => setTimeout(res, 2000));
       prediction = await fetch(
         `https://api.replicate.com/v1/predictions/${prediction.id}`,
-        {
-          headers: { Authorization: `Bearer ${process.env.REPLICATE_API_TOKEN}` }
-        }
+        { headers: { Authorization: `Bearer ${process.env.REPLICATE_API_TOKEN}` } }
       ).then(r => r.json());
     }
 
-    if (prediction.status === "failed") throw new Error("❌ SDXL falló generando imagen");
+    if (prediction.status === "failed") throw new Error("SDXL falló generando imagen");
 
-    console.log("✔ SDXL listo, integrando producto...");
+    console.log("🟢 Imagen generada con éxito");
     return prediction.output?.[0] || prediction.output_url;
 
   } catch (err) {
-    console.error("🔥 ERROR SDXL-INPAINT:", err);
+    console.error("🔥 ERROR SDXL:", err);
     throw err;
   }
 }
