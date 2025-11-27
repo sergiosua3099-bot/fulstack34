@@ -437,13 +437,10 @@ async function callReplicateInpaint({ roomImageUrl, maskBase64, prompt }) {
     const out = prediction.output;
 
     if (typeof out === "string") {
-      // Caso: output es directamente una URL string
       finalUrl = out;
     } else if (Array.isArray(out) && out.length > 0) {
-      // Caso: array de URLs
       finalUrl = out[0];
     } else if (out && typeof out === "object" && out.image) {
-      // Caso: objeto con campo image
       finalUrl = out.image;
     }
 
@@ -556,7 +553,7 @@ app.post(
       // 6) Máscara
       const maskBase64 = await createMaskFromAnalysis(analysis);
 
-        // 7) Replicate inpainting — prompt ULTRA ESTRICTO usando el embedding visual
+      // 7) Replicate inpainting — prompt ULTRA ESTRICTO usando el embedding visual
       const visualHints = productEmbedding
         ? `
 Colores principales del producto: ${(productEmbedding.colors || []).join(", ")}.
@@ -603,28 +600,6 @@ Genera UNA sola imagen final muy realista del MISMO espacio, con el producto int
 
       const uploadGenerated = await uploadUrlToCloudinary(
         generatedImageUrlFromReplicate,
-        "innotiva/generated",
-        "room-generated"
-      );
-
-      const generatedImageUrl = uploadGenerated.secure_url;
-      const generatedPublicId = uploadGenerated.public_id;
-
-      const thumbnails = {
-        before: buildThumbnails(roomPublicId),
-        after: buildThumbnails(generatedPublicId)
-      };
-
-      if (!userImageUrl || !generatedImageUrl) {
-        throw new Error("Imágenes incompletas (antes/después).");
-      }
-
-
-      // 8) Subir resultado a Cloudinary (SE LOGUEA LA URL ORIGINAL PARA DEBUG)
-      console.log("🔥 URL RAW desde Replicate =>", generatedImageUrlFromReplicate);
-
-      const uploadGenerated = await uploadUrlToCloudinary(
-        generatedImageUrlFromReplicate, // <-- AQUÍ SE USA DIRECTO
         "innotiva/generated",
         "room-generated"
       );
