@@ -672,13 +672,13 @@ try {
     body: JSON.stringify({
       input: {
         image: userImageUrl,
-        mask: `data:image/png;base64,${maskBase64}`,
+        mask: `data:image/png;base64,${maskBase64}`,   // 🔥 FIX FINAL
         prompt: prompt,
-        guidance: 6,              // ← mejor preservación fotográfica
-        num_inference_steps: 34,  // ← cinematic + textura más real
+        guidance: 6,
+        num_inference_steps: 34,
         output_format: "webp",
-        output_quality: 99,       // máxima calidad casi sin pérdida
-        megapixels: "match_input" // respeta resolución original (ideal mobile/desktop)
+        output_quality: 99,
+        megapixels: "match_input"
       }
     })
   });
@@ -687,13 +687,6 @@ try {
   generatedImageUrlFromReplicate = fluxResponse?.output?.[0];
 
   if (!generatedImageUrlFromReplicate) throw new Error("Flux-fill-dev no devolvió imagen");
-
-  console.log("🟢 RESULTADO FINAL HD+: ", generatedImageUrlFromReplicate);
-
-} catch (error) {
-  console.error("🚨 Error con flux-fill-dev:", error);
-  return res.status(500).json({ status:"error", message:"Fallo generación IA HD+" });
-}
 
 
 // ================== 10) SUBIR EL RESULTADO A CLOUDINARY ================== //
