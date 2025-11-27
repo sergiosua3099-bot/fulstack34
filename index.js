@@ -378,7 +378,7 @@ async function createMaskFromAnalysis(analysis) {
 // 🔥 INNOTIVA — Replicate FLUX 1.1 PRO Inpainting 100% COMPATIBLE (funciona con tu cuenta)
 // ==================================================================================
 
-async function callReplicateInpaint({ roomImageUrl, prompt }) {
+async function callReplicateInpaint({ roomImageUrl, maskBase64, prompt }) {
   try {
     console.log("[INNOTIVA] Replicate → usando FLUX-1.1-PRO");
 
@@ -386,31 +386,58 @@ async function callReplicateInpaint({ roomImageUrl, prompt }) {
       input: {
         prompt,
         image: roomImageUrl,
-        num_inference_steps: 28,
+        mask: maskBase64,
         width: 1024,
         height: 1024,
+        num_inference_steps: 28,
         guidance_scale: 3.5
       }
     };
 
     const response = await fetch(
-      `https://api.replicate.com/v1/models/black-forest-labs/flux-1.1-pro/predictions`,
+      "https://api.replicate.com/v1/models/black-forest-labs/flux-1.1-pro/predictions",
       {
         method: "POST",
         headers: {
-          "Authorization": `Bearer ${process.env.REPLICATE_API_TOKEN}`,
+          Authorization: `Bearer ${process.env.REPLICATE_API_TOKEN}`,
           "Content-Type": "application/json"
         },
         body: JSON.stringify(body)
       }
     );
 
-    const prediction = await response.json();
+    let prediction = await response.json();
 
-    if (!prediction.id) {
-      console.log("REP ERR =>", prediction);
-      throw new Error("No se pudo crear la predicción en Replicate");
+    if (!prediction.id) throw new Error("No se pudo crear la predicción");
+
+    while (prediction.status !== "succeeded" && prediction.status !== "failed") {
+      await new Promise(r => setTimeout(r, 2000));
+      const check = await fetch(
+        `https://api.replicate.com/v1/predictions/${prediction.id}`,
+        {
+          headers: { Authorization: `Bearer ${process.env.REPLICATE_API_TOKEN}` }
+        }
+      );
+      prediction = await check.json();
     }
+
+    if (prediction.status === "failed") throw new Error("Fallo Replicate");
+
+    const finalUrl =
+      prediction.output?.[0] ||
+      prediction.output?.image ||
+      prediction.output_url ||
+      null;
+
+    console.log("🔵 URL FINAL DE REPLICATE:", finalUrl);
+
+    return finalUrl;
+  } catch (e) {
+    console.error("🔥 ERROR INPAINT REPLICATE", e);
+    throw e;
+  }
+}
+
 
     // 🔄 Esperar resultado
     let result = prediction;
