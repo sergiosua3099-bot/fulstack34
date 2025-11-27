@@ -439,85 +439,103 @@ async function createMaskFromAnalysis(analysis) {
 
   return pngBuffer.toString("base64");
 }
-    // ==================================================================================
-// 🔥 Replicate con 2 fuentes visuales reales, preservando habitación original
+   // ==================================================================================
+// 🔥⛏ REPPLICATE — FLUX 1.1 PRO INPAINTING INTEGRADO CON FOTO REAL + PRODUCTO
 // ==================================================================================
+
 async function callReplicateInpaint({ roomImageUrl, maskBase64, prompt, productCutoutUrl }) {
   try {
-    console.log("[INNOTIVA] Replicate → FLUX 1.1 PRO (Modo Inserción Real)")
+    console.log("[INNOTIVA] → Enviando a Replicate con BASE REAL + PRODUCTO INCRUSTADO");
 
     const body = {
       input: {
-        prompt,
-
-        // FOTO REAL DEL CLIENTE (base)
+        /*
+        📌 BASE OBLIGATORIA — El lienzo real del cliente
+        💥 SI ESTO FALTA O ESTÁ MAL, Replicate inventa cuartos.
+        */
         image: roomImageUrl,
 
-        // MÁSCARA (solo aquí IA puede tocar)
+        /*
+        📌 MÁSCARA — Solo se edita en el área blanca
+        Todo lo negro permanece igual = habitación intacta
+        */
         mask: maskBase64,
 
-        // PRODUCTO A INTEGRAR (obligatorio que lo copie)
+
+        /*
+        📌 INYECCIÓN VISUAL DEL PRODUCTO
+        ESTA ES LA CLAVE PARA QUE NO INVENTE, SINO COPIE EL PRODUCTO REAL
+        */
         image_prompt: productCutoutUrl,
 
-        // MODO REAL DE INPAINTING
-        mode: "image_inpaint",
-        preserve_background: true,
 
-        // ⚠ Ajustes duros para NO inventar habitaciones
-        strength: 0.12,              // casi no rehace fondo
-        prompt_strength: 0.08,       // muy poco texto, más visual
-        guidance_scale: 1.2,         // no genera arte nuevo
-        conditioning_scale: 3.5,     // copia producto sí o sí
+        // ================================================================
+        //   💥 CONFIGURACIÓN CRÍTICA PARA QUE *NO IGNORE LA IMAGEN BASE*
+        // ================================================================
+        mode: "image_inpaint",
+        apply_mask_to_input: true,   // <–– SIN ESTO = te quita la habitación
+        preserve_background: true,   // <–– mantiene la arquitectura original
+        preserve_input: true,        // <–– no reescribe toda la imagen
+        use_base_image: true,        // <–– fuerza a usar foto del cliente
+
+        // ================================================================
+        //   📌 Control de creatividad
+        //   Entre más BAJO → menos inventa y más respeta lo original
+        // ================================================================
+        strength: 0.08,              // 0.05–0.15 ideal para insert real
+        prompt_strength: 0.03,
+        guidance_scale: 1.2,
+        conditioning_scale: 4.5,     // fuerza copia de colores/textura real
 
         width: 1024,
         height: 1024,
-        num_inference_steps: 48,
-        seed: Math.floor(Math.random() * 99999999)
+        num_inference_steps: 58,
+        disable_safety_checker: true,
+        seed: Math.floor(Math.random() * 900000000)
       }
-    }
+    };
 
-    // ===== POST + POLLING =====
+    // 🚀 DISPARO INICIAL
     let prediction = await fetch(
       "https://api.replicate.com/v1/models/black-forest-labs/flux-1.1-pro/predictions",
       {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${REPLICATE_API_TOKEN}`,
+          Authorization: `Bearer ${process.env.REPLICATE_API_TOKEN}`,
           "Content-Type": "application/json"
         },
         body: JSON.stringify(body)
       }
-    ).then(r => r.json())
+    ).then(r => r.json());
 
+    // 🔄 POLLING — Esperamos hasta que renderice
     while (prediction.status !== "succeeded" && prediction.status !== "failed") {
-      await new Promise(r => setTimeout(r, 1800))
+      await new Promise(r => setTimeout(r, 2200));
       prediction = await fetch(
         `https://api.replicate.com/v1/predictions/${prediction.id}`,
-        { headers: { Authorization: `Bearer ${REPLICATE_API_TOKEN}` } }
-      ).then(r => r.json())
+        { headers: { Authorization: `Bearer ${process.env.REPLICATE_API_TOKEN}` } }
+      ).then(r => r.json());
     }
 
-    if (prediction.status === "failed") throw new Error("Replicate falló")
+    if (prediction.status === "failed") throw new Error("Replicate falló ❌");
 
-    console.log("✔ Integración IA lista")
+    // Normalización de URL de salida
+    let finalUrl = null;
+    const out = prediction.output;
 
-    let url = null
-    const out = prediction.output
+    if (typeof out === "string") finalUrl = out;
+    else if (Array.isArray(out) && out[0]) finalUrl = out[0];
+    else if (out?.image) finalUrl = out.image;
+    else finalUrl = prediction.output_url;
 
-    if (typeof out === "string") url = out
-    else if (Array.isArray(out) && out[0]) url = out[0]
-    else if (out?.image) url = out.image
-    if (!url) url = prediction.output_url
+    if (!finalUrl.startsWith("http")) throw new Error("Salida inválida de Replicate ❌");
 
-    if (!url || !url.startsWith("http"))
-      throw new Error("URL inválida desde Replicate")
-
-    console.log("🔵 URL FINAL =", url)
-    return url
+    console.log("🔥 Imagen final IA lista:", finalUrl);
+    return finalUrl;
 
   } catch (err) {
-    console.error("🔥 ERROR INPAINT:", err)
-    throw err
+    console.log("🔥 ERROR REPLICATE =>", err);
+    throw err;
   }
 }
 
