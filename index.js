@@ -600,67 +600,62 @@ app.post(
       const maskBase64 = await createMaskFromAnalysis(analysis);
       logStep("Máscara generada correctamente");
 
-      // 7) Prompt ultra realista
-      const visual = productEmbedding
-        ? `
-Colores detectados: ${(productEmbedding.colors || []).join(", ")}
-Materiales: ${(productEmbedding.materials || []).join(", ")}
-Textura: ${productEmbedding.texture || "-"}
-Patrón: ${productEmbedding.pattern || "-"}`
-        : "";
+      // ====================== 7) GENERACIÓN FLUX — UNA SOLA LLAMADA (SIEMPRE SEGURA) ====================== //
 
-      const prompt = `
-REAL PHOTO INPAINTING — alta fidelidad.
+logStep("🧩 Llamando a FLUX (safe mode)...");
 
-Tu misión es insertar "${effectiveProductName}" dentro del área blanca de la máscara,
-manteniendo el resto de la habitación intacta.
+const fluxReq = await fetch("https://api.replicate.com/v1/models/black-forest-labs/flux-fill-dev/predictions",{
+  method:"POST",
+  headers:{
+    "Authorization":`Bearer ${REPLICATE_API_TOKEN}`,
+    "Content-Type":"application/json"
+  },
+  body:JSON.stringify({
+    input:{
+      image:userImageUrl,
+      mask:`data:image/png;base64,${maskBase64}`,
+      prompt:prompt,
+      guidance:5,                
+      num_inference_steps:26,
+      output_format:"webp",
+      output_quality:98,
+      megapixels:"1"                      // <── SIEMPRE VÁLIDO
+    }
+  })
+});
 
-Reglas obligatorias:
-- NO reemplazar paredes, muebles ni fondo completo.
-- Mantener perspectiva real de la cámara.
-- Mantener sombras e iluminación natural original.
-- Integración 100% fotográfica, nada artístico ni surreal.
-- Solo modificar la zona blanca de la máscara.
-- Si el entorno está poco definido, mantén lo existente antes de inventar uno nuevo.
+const fluxStart = await fluxReq.json();
 
-Estilo detectado del espacio: ${analysis.roomStyle || "desconocido"}.
-${visual}
-`;
+if(!fluxStart.id) throw new Error("❌ No se pudo iniciar FLUX");
 
-      // 8) Llamar a FLUX con fallback
-      const generatedImageUrlFromReplicate = await generateWithFlux({
-        roomImageUrl: userImageUrl,
-        maskBase64,
-        prompt
-      });
+// ====================== 8) POLLING HASTA OBTENER RESULTADO ====================== //
 
-      if (!generatedImageUrlFromReplicate) {
-        throw new Error("Flux-fill-dev no devolvió imagen");
-      }
+let fluxResult = fluxStart;
+while(fluxResult.status !== "succeeded" && fluxResult.status !== "failed") {
+  await new Promise(r => setTimeout(r, 2000)); // respetar rate limit
+  const check = await fetch(`https://api.replicate.com/v1/predictions/${fluxStart.id}`,{
+    headers:{ "Authorization":`Bearer ${REPLICATE_API_TOKEN}` }
+  });
+  fluxResult = await check.json();
+}
 
-      console.log(
-        "🔥 URL RAW desde Replicate =>",
-        generatedImageUrlFromReplicate
-      );
+if(fluxResult.status === "failed" || !fluxResult.output?.[0]) {
+  throw new Error("Flux-fill-dev no devolvió imagen (modo seguro)");
+}
 
-      // 9) Subir resultado a Cloudinary
-      const uploadGenerated = await uploadUrlToCloudinary(
-        generatedImageUrlFromReplicate,
-        "innotiva/generated",
-        "room-generated"
-      );
+const generatedImageUrlFromReplicate = fluxResult.output[0];
 
-      const generatedImageUrl = uploadGenerated.secure_url;
-      const generatedPublicId = uploadGenerated.public_id;
+logStep("🟢 FLUX COMPLETADO",{url:generatedImageUrlFromReplicate});
 
-      const thumbnails = {
-        before: buildThumbnails(roomPublicId),
-        after: buildThumbnails(generatedPublicId)
-      };
+// ====================== 9) SUBIR RESULTADO A CLOUDINARY ====================== //
 
-      if (!userImageUrl || !generatedImageUrl) {
-        throw new Error("Imágenes incompletas (antes/después).");
-      }
+const uploadGenerated = await uploadUrlToCloudinary(
+  generatedImageUrlFromReplicate,
+  "innotiva/generated",
+  "room-generated"
+);
+
+const generatedImageUrl = uploadGenerated.secure_url;
 
       // 10) Copy emocional
       const message = buildEmotionalCopy({
