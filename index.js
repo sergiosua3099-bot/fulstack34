@@ -538,66 +538,40 @@ async function callReplicateInpaint({ roomImageUrl, maskBase64, prompt, productC
   return result.output?.[0]; // URL final
 }
 
-// =========================================
-//  🔷 SDXL-INPAINT — Inserción final con máscara
-// =========================================
-
+// ===================================================
+//  🔥 FLUX-FILL-DEV — Inserción real del producto
+// ===================================================
 async function callReplicateInpaint({ roomImageUrl, maskBase64, prompt, productCutoutUrl }) {
-  console.log("🧩 Enviando a SDXL-INPAINT...");
+
+  console.log("🧩 Enviando a FLUX-FILL-DEV...");
 
   const maskDataUrl = `data:image/png;base64,${maskBase64}`;
 
-  const body = {
-    version: "stability-ai/sdxl-inpainting-1.0",
-    input: {
-      image: roomImageUrl,
-      mask: maskDataUrl,
-      prompt,
-      negative_prompt:
-        "borroso, plastic, artificial, deformado, cartoon, low detail, noise, artefactos, mala perspectiva, feo, exceso IA",
-      num_inference_steps: 36,
-      guidance_scale: 7.3,
-      // 📌 Dejamos comentado esto para activar referencia del producto luego 👇
-      // init_image: productCutoutUrl,
-      // strength: 0.82
-    }
-  };
-
-  // Crear predicción
-  let prediction = await fetch("https://api.replicate.com/v1/predictions", {
+  const predict = await fetch("https://api.replicate.com/v1/predictions", {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${REPLICATE_API_TOKEN}`,
+      Authorization: `Bearer ${process.env.REPLICATE_API_TOKEN}`,
       "Content-Type": "application/json"
     },
-    body: JSON.stringify(body)
+    body: JSON.stringify({
+      version: "black-forest-labs/flux-fill-dev:nbhx3kj26srm80ck9rwbscz1q0", // 🧠 Modelo correcto
+      input: {
+        image: roomImageUrl,
+        mask: maskDataUrl,
+        prompt: prompt,
+        guidance_scale: 8,
+        num_inference_steps: 35,
+      }
+    })
   }).then(r => r.json());
 
-  if (!prediction.id) {
-    console.error("❌ Replicate no inició predicción:", prediction);
-    throw new Error("Replicate no creó predicción — inputs inválidos");
-  }
+  if (!predict.id) throw new Error("❌ Replicate no creó predicción");
 
-  // Esperar resultado
-  while (prediction.status !== "succeeded" && prediction.status !== "failed") {
-    await new Promise(res => setTimeout(res, 1750));
-    prediction = await fetch(
-      `https://api.replicate.com/v1/predictions/${prediction.id}`,
-      { headers: { Authorization: `Bearer ${REPLICATE_API_TOKEN}` } }
-    ).then(r => r.json());
-  }
-
-  if (prediction.status === "failed") {
-    console.error("💀 SDXL falló:", prediction);
-    throw new Error("Fallo la generación en SDXL Inpainting");
-  }
-
-  const finalImage = prediction.output?.[0] || null;
-  if (!finalImage) throw new Error("Salida inválida de Replicate");
-
-  console.log("🔵 Imagen generada:", finalImage);
-  return finalImage;
-}
+  let result = predict;
+  while (result.status !== "succeeded" && result.status !== "failed") {
+    await new Promise(r => setTimeout(r, 2000));
+    result = await fetch(`https://api.replicate.com/v1/predictions/${predict.id}`, {
+      headers: { Authorization: `Bearer ${proces
 
 // ================== COPY EMOCIONAL ==================
 
