@@ -343,6 +343,77 @@ Instrucciones IMPORTANTES:
   return analysis;
 }
 
+// ============ NUEVO: MÁSCARA SEGÚN PRODUCTO + IDEA ============
+
+function determineMaskPosition(analysis, productType = "", ideaText = "") {
+  const imageWidth = analysis.imageWidth || 1200;
+  const imageHeight = analysis.imageHeight || 800;
+
+  // Tamaño base razonable
+  let width = Math.round(imageWidth * 0.45);
+  let height = Math.round(imageHeight * 0.35);
+  let x = Math.round((imageWidth - width) / 2);
+  let y = Math.round((imageHeight - height) / 2);
+
+  const type = (productType || "").toLowerCase();
+  const idea = (ideaText || "").toLowerCase();
+
+  // 🖼 Cuadros / marcos -> zona media/alta en pared
+  if (/(cuadro|frame|marco|poster|lienzo|art)/i.test(type)) {
+    y = Math.round(imageHeight * 0.18);
+    height = Math.round(imageHeight * 0.26);
+  }
+
+  // 🪑 Muebles (mesa, sofá, aparador) -> zona baja
+  if (/(mesa|table|coffee|sofá|sofa|mueble|aparador)/i.test(type)) {
+    y = Math.round(imageHeight * 0.55);
+    height = Math.round(imageHeight * 0.30);
+  }
+
+  // 💡 Lámparas -> zona superior
+  if (/(lámpara|lampara|lamp|ceiling|techo|hanging)/i.test(type)) {
+    y = Math.round(imageHeight * 0.08);
+    height = Math.round(imageHeight * 0.20);
+  }
+
+  // 🌿 Decoración pequeña
+  if (/(decor|florero|plant|planta|figura|ornamento)/i.test(type)) {
+    width = Math.round(imageWidth * 0.25);
+    height = Math.round(imageHeight * 0.22);
+    y = Math.round(imageHeight * 0.60);
+  }
+
+  // Ajustes por idea del cliente
+  if (idea) {
+    if (/arriba|superior/i.test(idea)) {
+      y = Math.round(imageHeight * 0.10);
+    }
+    if (/abajo|inferior/i.test(idea)) {
+      y = Math.round(imageHeight * 0.65);
+    }
+    if (/izquierda/i.test(idea)) {
+      x = Math.round(imageWidth * 0.10);
+    }
+    if (/derecha/i.test(idea)) {
+      x = Math.round(imageWidth * 0.60);
+    }
+    if (/centro|centrado/i.test(idea)) {
+      x = Math.round((imageWidth - width) / 2);
+    }
+    if (/esquina/i.test(idea)) {
+      width = Math.round(imageWidth * 0.22);
+    }
+  }
+
+  // Clamp para que no se salga de la imagen
+  if (x < 0) x = 0;
+  if (y < 0) y = 0;
+  if (x + width > imageWidth) width = imageWidth - x;
+  if (y + height > imageHeight) height = imageHeight - y;
+
+  return { x, y, width, height };
+}
+
 // ================== MÁSCARA ==================
 
 async function createMaskFromAnalysis(analysis) {
@@ -375,12 +446,12 @@ async function createMaskFromAnalysis(analysis) {
 }
 
 // ==================================================================================
-// 🔥 INNOTIVA — Replicate FLUX 1.1 PRO Inpainting 100% COMPATIBLE (funciona con tu cuenta)
+// 🔥 INNOTIVA — Replicate FLUX 1.1 PRO Inpainting (optimizado, sin inventar cuartos)
 // ==================================================================================
 
 async function callReplicateInpaint({ roomImageUrl, maskBase64, prompt }) {
   try {
-    console.log("[INNOTIVA] Replicate → usando FLUX-1.1-PRO");
+    console.log("[INNOTIVA] Replicate → usando FLUX-1.1-PRO Inpainting");
 
     const body = {
       input: {
@@ -389,8 +460,9 @@ async function callReplicateInpaint({ roomImageUrl, maskBase64, prompt }) {
         mask: maskBase64,
         width: 1024,
         height: 1024,
-        num_inference_steps: 28,
-        guidance_scale: 3.5
+        num_inference_steps: 40,    // más detalle que 28
+        guidance_scale: 5.0,        // sigue mejor el prompt
+        seed: Math.floor(Math.random() * 1_000_000_000) // evita repetición
       }
     };
 
@@ -432,7 +504,7 @@ async function callReplicateInpaint({ roomImageUrl, maskBase64, prompt }) {
 
     console.log("[INNOTIVA] IA generada ✔");
 
-    // 🧠 Normalizar la salida para evitar el bug de "h"
+    // Normalizar salida
     let finalUrl = null;
     const out = prediction.output;
 
@@ -550,10 +622,18 @@ app.post(
         ideaText: idea
       });
 
-      // 6) Máscara
+      // 6) Ajustar placement según tipo de producto + idea
+      const refinedPlacement = determineMaskPosition(
+        analysis,
+        productData.productType,
+        idea
+      );
+      analysis.finalPlacement = refinedPlacement;
+
+      // 7) Máscara
       const maskBase64 = await createMaskFromAnalysis(analysis);
 
-      // 7) Replicate inpainting — prompt ULTRA ESTRICTO usando el embedding visual
+      // 8) Prompt para Replicate — ULTRA estricto
       const visualHints = productEmbedding
         ? `
 Colores principales del producto: ${(productEmbedding.colors || []).join(", ")}.
@@ -564,29 +644,29 @@ Patrón o diseño: ${productEmbedding.pattern || ""}.
         : "";
 
       const prompt = `
-Eres un modelo experto en interiorismo realista y fotorealismo. 
-Tienes una fotografía REAL de un espacio y debes INTEGRAR UN ÚNICO producto de decoración en la zona marcada por la máscara.
+Eres un modelo experto en INPAINTING FOTOREALISTA para interiorismo.
 
-Producto a integrar (NO inventes otro distinto):
-${effectiveProductName}.
-
+Tienes:
+- Una fotografía REAL del espacio del cliente (image).
+- Una máscara (mask) que marca la zona EXACTA donde puedes editar.
+- La descripción del producto a integrar: ${effectiveProductName}.
 ${visualHints}
 
-Reglas OBLIGATORIAS:
+Contexto del espacio:
+- Estilo del espacio: ${analysis.roomStyle || "tu espacio"}.
+- SOLO puedes modificar píxeles dentro de la zona blanca de la máscara.
+- TODO lo que está FUERA de la máscara debe permanecer idéntico a la foto original.
+
+REGLAS OBLIGATORIAS:
 1. No cambies la arquitectura del espacio (paredes, techo, ventanas, puertas se quedan igual).
-2. No muevas ni borres muebles existentes, sólo integra el producto en la zona enmascarada.
-3. Mantén el estilo del espacio: ${analysis.roomStyle || "tu espacio"}.
+2. No muevas ni borres muebles existentes, salvo donde la máscara cubra claramente ese área.
+3. No inventes nuevos objetos ni cambies el estilo general del cuarto.
 4. Mantén iluminación, sombras y perspectiva coherentes con la foto original.
 5. El producto debe verse protagonista, nítido y realista, como si realmente estuviera en la foto.
-6. No agregues texto, logos ni elementos extra que no sean necesarios.
+6. No agregues texto, logos ni elementos extra innecesarios.
+7. Si no estás seguro, conserva el fondo original y haz la integración lo más sutil y realista posible.
 
-Si el producto es un CUADRO:
-- Colócalo en la pared de forma coherente.
-- A una altura natural (aproximadamente a la altura de los ojos).
-- Centrado respecto al mueble principal más cercano.
-- Con proporciones realistas (ni gigante ni diminuto).
-
-Genera UNA sola imagen final muy realista del MISMO espacio, con el producto integrado en la zona marcada.
+Genera UNA sola imagen final muy realista del MISMO espacio real, con el producto integrado dentro de la zona marcada por la máscara.
 `;
 
       const generatedImageUrlFromReplicate = await callReplicateInpaint({
@@ -595,7 +675,7 @@ Genera UNA sola imagen final muy realista del MISMO espacio, con el producto int
         prompt
       });
 
-      // 8) Subir resultado a Cloudinary (SE LOGUEA LA URL ORIGINAL PARA DEBUG)
+      // 9) Subir resultado a Cloudinary
       console.log("🔥 URL RAW desde Replicate =>", generatedImageUrlFromReplicate);
 
       const uploadGenerated = await uploadUrlToCloudinary(
@@ -616,14 +696,14 @@ Genera UNA sola imagen final muy realista del MISMO espacio, con el producto int
         throw new Error("Imágenes incompletas (antes/después).");
       }
 
-      // 9) Copy emocional
+      // 10) Copy emocional
       const message = buildEmotionalCopy({
         roomStyle: analysis.roomStyle,
         productName: effectiveProductName,
         idea
       });
 
-      // 10) sessionId
+      // 11) sessionId
       const sessionId = crypto.randomUUID();
 
       const payload = {
