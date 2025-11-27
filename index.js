@@ -441,29 +441,27 @@ async function createMaskFromAnalysis(analysis) {
 }
 
 // ===================================================
-//  🔥 FLUX-FILL-DEV — Inserción real del producto
+//  🔥 FLUX INPAINT MODE REAL — Inserción con producto real
 // ===================================================
 async function callReplicateInpaint({ roomImageUrl, maskBase64, prompt, productCutoutUrl }) {
-  console.log("🧩 Enviando a FLUX-FILL-DEV...");
 
-  const version = REPLICATE_MODEL_VERSION || "nbhx3kj26srm80ck9rwbscz1q0";
-  const maskDataUrl = `data:image/png;base64,${maskBase64}`;
+  console.log("🧩 Enviando a FLUX-FILL-DEV INPAINT...");
 
   const predict = await fetch("https://api.replicate.com/v1/predictions", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${REPLICATE_API_TOKEN}`,
-      "Content-Type": "application/json"
+      "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      version,
+      model: "black-forest-labs/flux-fill-dev", // 🧠 MODELO REAL Y EXISTENTE
       input: {
-        image: roomImageUrl,          // Foto real del cliente
-        mask: maskDataUrl,            // Zona editable
-        prompt: prompt,               // Prompt premium
-        reference_image: productCutoutUrl, // Producto recortado real
-        guidance_scale: 8,
-        num_inference_steps: 36,
+        image: roomImageUrl,
+        mask: `data:image/png;base64,${maskBase64}`,
+        prompt: prompt,
+        reference_image: productCutoutUrl,   // 👑 INSERTA EL PRODUCTO REAL
+        guidance: 7,
+        steps: 32,
         seed: 42
       }
     })
@@ -471,45 +469,26 @@ async function callReplicateInpaint({ roomImageUrl, maskBase64, prompt, productC
 
   if (!predict || !predict.id) {
     console.error("❌ Replicate no inició predicción:", predict);
-    throw new Error("Replicate no creó predicción — inputs/versión inválidos");
+    throw new Error("Predicción fallida — modelo o input inválido");
   }
 
   let result = predict;
   while (result.status !== "succeeded" && result.status !== "failed") {
-    await new Promise(r => setTimeout(r, 2000));
+    await new Promise(r => setTimeout(r, 1600));
     result = await fetch(`https://api.replicate.com/v1/predictions/${predict.id}`, {
       headers: { Authorization: `Bearer ${REPLICATE_API_TOKEN}` }
     }).then(r => r.json());
   }
 
   if (result.status === "failed") {
-    console.error("❌ Falló flux-fill-dev:", result);
-    throw new Error("Generación fallida en Replicate");
+    console.error("💥 Falló INPAINT:", result);
+    throw new Error("Generación no completada");
   }
 
-  console.log("🟢 Imagen fusionada con producto:", result.output?.[0]);
-  return result.output?.[0]; // URL final
+  console.log("🟢 Resultado final:", result.output?.[0]);
+  return result.output?.[0];
 }
 
-// ================== COPY EMOCIONAL ==================
-
-function buildEmotionalCopy({ roomStyle, productName, idea }) {
-  const base = roomStyle || "tu espacio";
-
-  let msg = `Diseñamos esta propuesta pensando en ${base}.`;
-
-  if (productName) {
-    msg += ` Integrando ${productName} como protagonista, buscamos un equilibrio entre estilo y calidez.`;
-  }
-
-  if (idea && idea.trim().length > 0) {
-    msg += ` También tuvimos en cuenta tu idea: “${idea.trim()}”.`;
-  }
-
-  msg += ` Así puedes visualizar cómo se vería tu espacio antes de tomar la decisión final.`;
-
-  return msg;
-}
 
 // ================== ENDPOINT PRINCIPAL ==================
 
