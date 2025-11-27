@@ -547,24 +547,35 @@ Si el producto es un cuadro, colócalo en la pared de forma coherente.
         prompt
       });
 
-      // 8) Subir resultado a Cloudinary
-      const uploadGenerated = await uploadUrlToCloudinary(
-        generatedImageUrlFromReplicate,
-        "innotiva/generated",
-        "room-generated"
-      );
-      const generatedImageUrl = uploadGenerated.secure_url;
-      const generatedPublicId = uploadGenerated.public_id;
+      // 7) Replicate inpainting
+const generatedImageUrlFromReplicate = await callReplicateInpaint({
+  roomImageUrl: userImageUrl,
+  maskBase64,
+  prompt
+});
 
-      const thumbnails = {
-        before: buildThumbnails(roomPublicId),
-        after: buildThumbnails(generatedPublicId)
-      };
+// 8) Subir resultado a Cloudinary (SE LOGUEA LA URL ORIGINAL PARA DEBUG)
+console.log("🔥 URL RAW desde Replicate =>", generatedImageUrlFromReplicate);
 
-      if (!userImageUrl || !generatedImageUrl) {
-        throw new Error("Imágenes incompletas (antes/después).");
-      }
+const uploadGenerated = await uploadUrlToCloudinary(
+  generatedImageUrlFromReplicate,       // <-- AQUÍ SE USA DIRECTO
+  "innotiva/generated",
+  "room-generated"
+);
 
+const generatedImageUrl = uploadGenerated.secure_url;
+const generatedPublicId = uploadGenerated.public_id;
+
+const thumbnails = {
+  before: buildThumbnails(roomPublicId),
+  after: buildThumbnails(generatedPublicId)
+};
+
+if (!userImageUrl || !generatedImageUrl) {
+  throw new Error("Imágenes incompletas (antes/después).");
+}
+
+      
       // 9) Copy emocional
       const message = buildEmotionalCopy({
         roomStyle: analysis.roomStyle,
