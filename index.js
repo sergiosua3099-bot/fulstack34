@@ -341,7 +341,6 @@ Instrucciones IMPORTANTES:
 
   return analysis;
 }
-
 // ============ POSICIÓN DE LA MÁSCARA SEGÚN PRODUCTO + IDEA ============
 
 function determineMaskPosition(analysis, productType = "", ideaText = "") {
@@ -433,7 +432,7 @@ async function createMaskFromAnalysis(analysis) {
 }
 
 // ===================================================
-//  🔥 FLUX-FILL-DEV — con fallback para móvil / PC
+//  🔥 FLUX-FILL-DEV — con fallback (NO usado ahora, pero lo dejamos por si)
 // ===================================================
 
 async function generateWithFlux({ roomImageUrl, maskBase64, prompt }) {
@@ -477,10 +476,7 @@ async function generateWithFlux({ roomImageUrl, maskBase64, prompt }) {
       const prediction = await createRes.json();
 
       if (prediction?.output?.[0]) {
-        console.log(
-          "🟢 Resultado final FLUX:",
-          prediction.output[0]
-        );
+        console.log("🟢 Resultado final FLUX:", prediction.output[0]);
         return prediction.output[0];
       } else {
         console.error("⛔ FLUX sin output en config", cfg, prediction);
@@ -512,7 +508,6 @@ function buildEmotionalCopy({ roomStyle, productName, idea }) {
 
   return msg;
 }
-
 // ================== ENDPOINT PRINCIPAL ==================
 
 app.post(
@@ -588,29 +583,28 @@ app.post(
         ideaText: idea
       });
 
-     // ====================== 6) Ajustar placement + crear máscara ====================== //
+      // 6) Ajustar placement + crear máscara
+      const refinedPlacement = determineMaskPosition(
+        analysis,
+        productData.productType,
+        idea
+      );
+      analysis.finalPlacement = refinedPlacement;
 
-const refinedPlacement = determineMaskPosition(
-  analysis,
-  productData.productType,
-  idea
-);
-analysis.finalPlacement = refinedPlacement;
+      logStep("Generando máscara...");
+      const maskBase64 = await createMaskFromAnalysis(analysis);
+      logStep("Máscara generada correctamente");
 
-logStep("Generando máscara...");
-const maskBase64 = await createMaskFromAnalysis(analysis);
-logStep("Máscara generada correctamente");
+      // 7) Construir prompt
+      const visual = productEmbedding
+        ? `
+Colores detectados: ${(productEmbedding.colors || []).join(", ")}
+Materiales: ${(productEmbedding.materials || []).join(", ")}
+Textura: ${productEmbedding.texture || "-"}
+Patrón: ${productEmbedding.pattern || "-"}`
+        : "";
 
-
-// ====================== 7) CONSTRUIR EL PROMPT (AQUÍ FALTABA) ====================== //
-
-const visual = productEmbedding ? `
-Colores detectados: ${(productEmbedding.colors||[]).join(", ")}
-Materiales: ${(productEmbedding.materials||[]).join(", ")}
-Textura: ${productEmbedding.texture||"-"}
-Patrón: ${productEmbedding.pattern||"-"}` : "";
-
-const prompt = `
+      const prompt = `
 REAL PHOTO INPAINTING — Integración hiperrealista del producto dentro de la habitación.
 
 Inserta **${effectiveProductName}** únicamente dentro del área blanca de la máscara.
@@ -626,55 +620,79 @@ Reglas estrictas:
 ${visual}
 `;
 
+      // 8) FLUX SAFE MODE — UNA SOLA GENERACIÓN CON POLLING
+      logStep("🧩 Llamando a FLUX (safe mode)...");
 
-// ====================== 8) FLUX SAFE MODE — UNA SOLA GENERACIÓN ====================== //
+      const fluxReq = await fetch(
+        "https://api.replicate.com/v1/models/black-forest-labs/flux-fill-dev/predictions",
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${REPLICATE_API_TOKEN}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            input: {
+              image: userImageUrl,
+              mask: `data:image/png;base64,${maskBase64}`,
+              prompt,
+              guidance: 5,
+              num_inference_steps: 26,
+              output_format: "webp",
+              output_quality: 98,
+              megapixels: "1" // siempre permitido
+            }
+          })
+        }
+      );
 
-logStep("🧩 Llamando a FLUX (safe mode)...");
+      const fluxStart = await fluxReq.json();
+      if (!fluxStart.id) {
+        console.error("❌ No se pudo iniciar FLUX:", fluxStart);
+        throw new Error("No se pudo iniciar FLUX");
+      }
 
-const fluxReq = await fetch("https://api.replicate.com/v1/models/black-forest-labs/flux-fill-dev/predictions",{
-  method:"POST",
-  headers:{
-    "Authorization":`Bearer ${REPLICATE_API_TOKEN}`,
-    "Content-Type":"application/json"
-  },
-  body:JSON.stringify({
-    input:{
-      image:userImageUrl,
-      mask:`data:image/png;base64,${maskBase64}`,
-      prompt,
-      guidance:5,
-      num_inference_steps:26,
-      output_format:"webp",
-      output_quality:98,
-      megapixels:"1"   // ⇦ siempre permitido → ya no te marca error
-    }
-  })
-});
+      let fluxResult = fluxStart;
+      while (
+        fluxResult.status !== "succeeded" &&
+        fluxResult.status !== "failed"
+      ) {
+        await new Promise((r) => setTimeout(r, 2000));
+        const check = await fetch(
+          `https://api.replicate.com/v1/predictions/${fluxStart.id}`,
+          {
+            headers: { Authorization: `Bearer ${REPLICATE_API_TOKEN}` }
+          }
+        );
+        fluxResult = await check.json();
+      }
 
-const fluxStart = await fluxReq.json();
-if(!fluxStart.id) throw new Error("❌ No se pudo iniciar FLUX");
+      if (fluxResult.status === "failed" || !fluxResult.output?.[0]) {
+        console.error("❌ FLUX falló:", fluxResult);
+        throw new Error("Flux-fill-dev no devolvió imagen (safe mode)");
+      }
 
-// ====================== 9) POLLING — ESPERAR HASTA OBTENER LA IMAGEN ====================== //
+      const generatedImageUrlFromReplicate = fluxResult.output[0];
+      logStep("🟢 FLUX listo", { url: generatedImageUrlFromReplicate });
 
-let fluxResult = fluxStart;
-while(fluxResult.status !== "succeeded" && fluxResult.status !== "failed") {
-  await new Promise(r => setTimeout(r, 2000));
-  const check = await fetch(`https://api.replicate.com/v1/predictions/${fluxStart.id}`,{
-    headers:{"Authorization":`Bearer ${REPLICATE_API_TOKEN}`}
-  });
-  fluxResult = await check.json();
-}
+      // 9) Subir resultado a Cloudinary para tener https + thumbnails
+      const uploadGenerated = await uploadUrlToCloudinary(
+        generatedImageUrlFromReplicate,
+        "innotiva/generated",
+        "room-generated"
+      );
 
-if(fluxResult.status === "failed" || !fluxResult.output?.[0]) {
-  throw new Error("Flux-fill-dev no devolvió imagen (safe mode)");
-}
+      const generatedImageUrl = uploadGenerated.secure_url;
+      const generatedPublicId = uploadGenerated.public_id;
 
-const generatedImageUrlFromReplicate = fluxResult.output[0];
-logStep("🟢 FLUX listo",{ url:generatedImageUrlFromReplicate });
+      const thumbnails = {
+        before: buildThumbnails(roomPublicId),
+        after: buildThumbnails(generatedPublicId)
+      };
 
-// A partir de aquí sigue tu código normal ↓↓
-// Upload a Cloudinary, message, respuesta final JSON, etc.
-
+      if (!userImageUrl || !generatedImageUrl) {
+        throw new Error("Imágenes incompletas (antes/después).");
+      }
 
       // 10) Copy emocional
       const message = buildEmotionalCopy({
@@ -690,13 +708,13 @@ logStep("🟢 FLUX listo",{ url:generatedImageUrlFromReplicate });
         elapsedMs: Date.now() - startedAt
       });
 
-      // 12) Respuesta final (shape que usa tu frontend)
+      // 12) Respuesta final
       return res.status(200).json({
         ok: true,
         status: "complete",
         sessionId,
         room_image: userImageUrl,
-        ai_image: generatedImageUrlFromReplicate,
+        ai_image: generatedImageUrl,
         product_url: productUrl || null,
         product_name: effectiveProductName,
         message,
@@ -710,7 +728,7 @@ logStep("🟢 FLUX listo",{ url:generatedImageUrlFromReplicate });
       return res.status(500).json({
         status: "error",
         message:
-          "Tuvimos un problema al generar tu propuesta. Intenta otra vez."
+          "Tuvimos un problema al generar tu propuesta. Intenta otra vez en unos segundos."
       });
     }
   }
