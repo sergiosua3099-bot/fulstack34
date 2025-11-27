@@ -440,39 +440,38 @@ async function createMaskFromAnalysis(analysis) {
   return pngBuffer.toString("base64");
 }
 // ==================================================================================
-// 🔥 Replicate — FLUX 1.1 INPAINTING + REFERENCIA REAL DEL PRODUCTO
+// 🔥 Replicate — Stable Diffusion XL INPAINTING (Ahora sí respeta la habitación)
 // ==================================================================================
-async function callReplicateInpaint({ roomImageUrl, maskBase64, productCutoutUrl, prompt }) {
+async function callReplicateInpaint({ roomImageUrl, maskBase64, prompt, productCutoutUrl }) {
   try {
-    console.log("🚀 Enviando a Replicate — FLUX 1.1 INPAINTING + REFERENCIA REAL");
+    console.log("[INNOTIVA] 🧠 Replicate → SDXL Inpainting ACTIVADO");
 
     const body = {
+      version: "e5b04f838ba91a08c602ab2292e8a5c115489acd1657f3b2b33c36da99d1c308", // versión estable SDXL-INPAINT
       input: {
-        prompt,
+        // FOTO BASE — habitación del cliente
+        image: roomImageUrl,
 
-        // 🏠 Imagen real del cliente
-        init_image: roomImageUrl,
+        // MÁSCARA — zona donde se inserta el producto
         mask: maskBase64,
 
-        // 🖼 Producto real como referencia para copiar textura
-        reference_image: productCutoutUrl,
-        reference_strength: 0.88,
+        // REFERENCIA VISUAL — producto real recortado
+        init_image: productCutoutUrl,
 
-        // Mantener la escena real
-        preserve_init_image: true,
-        strength: 0.22,
-        guidance_scale: 3.0,
+        prompt,                     // prompt que ya generas
+        negative_prompt: "rooms changed, new rooms, painting background, unrealistic objects, distortions, surreal",
 
-        width: 1024,
-        height: 1024,
-        num_inference_steps: 55,
-        seed: Math.floor(Math.random() * 99999999)
+        // AJUSTES PARA RESPETO MÁXIMO A LA HABITACIÓN
+        strength: 0.35,             // menor = respeta más el cuarto
+        steps: 45,
+        guidance_scale: 7,
+        seed: Math.floor(Math.random() * 999999999)
       }
     };
 
-    // 🧠 Crear predicción
+    // 🚀 Enviar a Replicate
     let prediction = await fetch(
-      "https://api.replicate.com/v1/models/black-forest-labs/flux-1.1-inpainting/predictions",
+      "https://api.replicate.com/v1/predictions",
       {
         method: "POST",
         headers: {
@@ -483,31 +482,29 @@ async function callReplicateInpaint({ roomImageUrl, maskBase64, productCutoutUrl
       }
     ).then(r => r.json());
 
-    if (!prediction.id) {
-      console.log("❌ Response inesperada:", prediction);
-      throw new Error("Replicate no creó predicción — inputs inválidos");
-    }
+    if (!prediction.id) throw new Error("❌ Replicate no inició la predicción");
 
-    // 🔄 Esperar hasta que termine
-    while (!["succeeded","failed"].includes(prediction.status)) {
-      await new Promise(r => setTimeout(r,2000));
+    // 🔄 Polling hasta que termine
+    while (prediction.status !== "succeeded" && prediction.status !== "failed") {
+      await new Promise(res => setTimeout(res, 2200));
       prediction = await fetch(
         `https://api.replicate.com/v1/predictions/${prediction.id}`,
-        { headers: { Authorization: `Bearer ${process.env.REPLICATE_API_TOKEN}` }}
-      ).then(r=>r.json());
+        {
+          headers: { Authorization: `Bearer ${process.env.REPLICATE_API_TOKEN}` }
+        }
+      ).then(r => r.json());
     }
 
-    if (prediction.status==="failed") throw new Error("Replicate falló generando imagen");
+    if (prediction.status === "failed") throw new Error("❌ SDXL falló generando imagen");
 
-    // 🟢 URL final limpia
-    return Array.isArray(prediction.output) ? prediction.output[0] : prediction.output;
+    console.log("✔ SDXL listo, integrando producto...");
+    return prediction.output?.[0] || prediction.output_url;
 
-  } catch(err){
-    console.error("🔥 ERROR callReplicateInpaint:",err);
+  } catch (err) {
+    console.error("🔥 ERROR SDXL-INPAINT:", err);
     throw err;
   }
 }
-
 
 
 // ================== COPY EMOCIONAL ==================
