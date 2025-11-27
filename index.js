@@ -441,7 +441,7 @@ async function createMaskFromAnalysis(analysis) {
 }
 
 // ==================================================================================
-// 🔥 Replicate con base real (cuarto cliente) + inserción del producto sin alterar fondo
+// 🔥 Replicate con cuarto real preservado + producto insertado + PARSER A PRUEBA DE FALLAS
 // ==================================================================================
 async function callReplicateInpaint({ roomImageUrl, maskBase64, prompt, productCutoutUrl }) {
   try {
@@ -449,40 +449,36 @@ async function callReplicateInpaint({ roomImageUrl, maskBase64, prompt, productC
 
     const body = {
       input: {
-        // TEXTO / INSTRUCCIÓN
         prompt,
 
-        // 📌 FOTO REAL DEL CLIENTE — 4 ANCLAS
-        image: roomImageUrl,           // Imagen primaria
-        init_image: roomImageUrl,      // Guía visual base
-        reference_image: roomImageUrl, // 🔥 Conserva ambiente original
-        control_image: roomImageUrl,   // 🔥 Mantiene colores + composición
+        // Imagen original del cliente como ancla fuerte
+        image: roomImageUrl,
+        init_image: roomImageUrl,
+        reference_image: roomImageUrl,
+        control_image: roomImageUrl,
 
-        // 📌 MÁSCARA → SOLO modificar área blanca
+        // Zona editable
         mask: maskBase64,
 
-        // 📌 PRODUCTO REAL PARA INSERTAR
+        // Producto real a integrar
         conditioning_image: productCutoutUrl,
-        conditioning_scale: 2.4, // <—— más alto = más fiel al producto
+        conditioning_scale: 2.4,
 
-        // 🧠 MODO DE INPAINTING
         mode: "image_inpaint",
         preserve_background: true,
 
-        // 🧩 VALORES CLAVE PARA NO REINVENTAR EL CUARTO
-        strength: 0.12,        // ↓ Menos cambio global
-        prompt_strength: 0.18, // ↓ Respeta más la imagen base
-        guidance_scale: 1.4,   // ↓ Menos creatividad IA
+        strength: 0.12,
+        prompt_strength: 0.18,
+        guidance_scale: 1.4,
 
-        // RENDER
         width: 1024,
         height: 1024,
         num_inference_steps: 38,
-        seed: Math.floor(Math.random() * 99999999)
+        seed: Math.floor(Math.random()*9999999)
       }
     };
 
-    // ======= Crear predicción =======
+    // ===== 1) Crear tarea =====
     let prediction = await fetch(
       "https://api.replicate.com/v1/models/black-forest-labs/flux-1.1-pro/predictions",
       {
@@ -493,35 +489,48 @@ async function callReplicateInpaint({ roomImageUrl, maskBase64, prompt, productC
         },
         body: JSON.stringify(body)
       }
-    ).then(r => r.json());
+    ).then(r=>r.json());
 
-    if (!prediction.id) throw new Error("No prediction ID");
+    if(!prediction.id) throw new Error("No se creó predicción.");
 
-    // ======= Polling =======
+    // ===== 2) Polling =====
     while (!["succeeded","failed"].includes(prediction.status)) {
-      await new Promise(r => setTimeout(r, 2000));
+      await new Promise(r=>setTimeout(r,2000));
       prediction = await fetch(
         `https://api.replicate.com/v1/predictions/${prediction.id}`,
-        { headers: { Authorization: `Bearer ${REPLICATE_API_TOKEN}` }}
-      ).then(r => r.json());
+        { headers:{Authorization:`Bearer ${REPLICATE_API_TOKEN}`} }
+      ).then(r=>r.json());
     }
 
-    if (prediction.status === "failed") throw new Error("Replicate falló ❌");
+    if(prediction.status==="failed") throw new Error("Replicate falló ❌");
 
-    // ======= Normalizar salida =======
-    let finalUrl = prediction.output?.[0] || prediction.output_url;
+    console.log("✔ IA Terminada — normalizando salida...");
+
+    // ===========================
+    // ⚠ NUEVO PARSER — captura TODOS los formatos posibles
+    // ===========================
+    let finalUrl = null;
+    const out = prediction.output;
+
+    if (typeof out === "string") finalUrl = out;
+    else if (Array.isArray(out) && out[0]) finalUrl = out[0];
+    else if (out?.image) finalUrl = out.image;
+    else if (out?.images?.[0]) finalUrl = out.images[0];
+    else if (out?.result?.[0]) finalUrl = out.result[0];
+
+    if (!finalUrl && prediction.output_url) finalUrl = prediction.output_url;
+
     if (!finalUrl || !finalUrl.startsWith("http"))
-      throw new Error("Salida inválida, no es URL http");
+      throw new Error("Salida inválida, finalUrl no es http → "+String(finalUrl));
 
-    console.log("🔵 RESULTADO FINAL:", finalUrl);
+    console.log("🔵 URL FINAL DE REPLICATE:", finalUrl);
     return finalUrl;
 
-  } catch (err) {
-    console.error("🔥 ERROR callReplicateInpaint:", err);
+  } catch(err) {
+    console.error("🔥 ERROR callReplicateInpaint", err);
     throw err;
   }
 }
-
 
 // ================== COPY EMOCIONAL ==================
 
