@@ -9,12 +9,12 @@ const sharp = require("sharp");
 const crypto = require("crypto");
 const OpenAI = require("openai");
 const cloudinary = require("cloudinary").v2;
+const fetch = global.fetch;
 
 // ================== CONFIG BÁSICA ==================
 
 const app = express();
 const upload = multer({ storage: multer.memoryStorage() });
-
 const PORT = process.env.PORT || 10000;
 
 const openai = new OpenAI({
@@ -31,7 +31,6 @@ const SHOPIFY_STORE_DOMAIN = process.env.SHOPIFY_STORE_DOMAIN;
 const SHOPIFY_STOREFRONT_TOKEN = process.env.SHOPIFY_STOREFRONT_TOKEN;
 
 const REPLICATE_API_TOKEN = process.env.REPLICATE_API_TOKEN;
-// Modelo por defecto en Replicate (puedes sobreescribir por env)
 const REPLICATE_MODEL_SLUG =
   process.env.REPLICATE_MODEL_SLUG || "black-forest-labs/flux-fill-dev";
 
@@ -140,7 +139,7 @@ async function createProductCutout(productImageUrl) {
     "product-original"
   );
 
-  // ⚠️ Forzamos https + recorte + calidad
+  // Recorte + calidad
   const cutoutUrl = cloudinary.url(uploadRes.public_id, {
     secure: true,
     width: 1024,
@@ -208,7 +207,7 @@ async function fetchProductFromShopify(productId) {
 
 // ================== OPENAI HELPERS ==================
 
-// 1) Embedding visual del producto (con imagen en base64 para evitar timeout)
+// 1) Embedding visual del producto
 async function buildProductEmbedding(product, productCutoutUrl) {
   const imageUrl = productCutoutUrl || product.featuredImage;
   if (!imageUrl) return null;
@@ -343,13 +342,12 @@ Instrucciones IMPORTANTES:
   return analysis;
 }
 
-// ============ NUEVO: MÁSCARA SEGÚN PRODUCTO + IDEA ============
+// ============ POSICIÓN DE LA MÁSCARA SEGÚN PRODUCTO + IDEA ============
 
 function determineMaskPosition(analysis, productType = "", ideaText = "") {
   const imageWidth = analysis.imageWidth || 1200;
   const imageHeight = analysis.imageHeight || 800;
 
-  // Tamaño base razonable (más pequeño para no rehacer todo)
   let width = Math.round(imageWidth * 0.28);
   let height = Math.round(imageHeight * 0.22);
   let x = Math.round((imageWidth - width) / 2);
@@ -358,54 +356,43 @@ function determineMaskPosition(analysis, productType = "", ideaText = "") {
   const type = (productType || "").toLowerCase();
   const idea = (ideaText || "").toLowerCase();
 
-  // 🖼 Cuadros / marcos -> zona media/alta en pared
+  // Cuadros
   if (/(cuadro|frame|marco|poster|lienzo|art)/i.test(type)) {
     y = Math.round(imageHeight * 0.18);
     height = Math.round(imageHeight * 0.26);
   }
 
-  // 🪑 Muebles (mesa, sofá, aparador) -> zona baja
+  // Muebles bajos
   if (/(mesa|table|coffee|sofá|sofa|mueble|aparador)/i.test(type)) {
     y = Math.round(imageHeight * 0.55);
     height = Math.round(imageHeight * 0.30);
   }
 
-  // 💡 Lámparas -> zona superior
+  // Lámparas
   if (/(lámpara|lampara|lamp|ceiling|techo|hanging)/i.test(type)) {
     y = Math.round(imageHeight * 0.08);
     height = Math.round(imageHeight * 0.20);
   }
 
-  // 🌿 Decoración pequeña
+  // Decor pequeño
   if (/(decor|florero|plant|planta|figura|ornamento)/i.test(type)) {
     width = Math.round(imageWidth * 0.25);
     height = Math.round(imageHeight * 0.22);
     y = Math.round(imageHeight * 0.60);
   }
 
-  // Ajustes por idea del cliente
+  // Idea del cliente
   if (idea) {
-    if (/arriba|superior/i.test(idea)) {
-      y = Math.round(imageHeight * 0.10);
-    }
-    if (/abajo|inferior/i.test(idea)) {
-      y = Math.round(imageHeight * 0.65);
-    }
-    if (/izquierda/i.test(idea)) {
-      x = Math.round(imageWidth * 0.10);
-    }
-    if (/derecha/i.test(idea)) {
-      x = Math.round(imageWidth * 0.60);
-    }
-    if (/centro|centrado/i.test(idea)) {
+    if (/arriba|superior/i.test(idea)) y = Math.round(imageHeight * 0.10);
+    if (/abajo|inferior/i.test(idea)) y = Math.round(imageHeight * 0.65);
+    if (/izquierda/i.test(idea)) x = Math.round(imageWidth * 0.10);
+    if (/derecha/i.test(idea)) x = Math.round(imageWidth * 0.60);
+    if (/centro|centrado/i.test(idea))
       x = Math.round((imageWidth - width) / 2);
-    }
-    if (/esquina/i.test(idea)) {
-      width = Math.round(imageWidth * 0.22);
-    }
+    if (/esquina/i.test(idea)) width = Math.round(imageWidth * 0.22);
   }
 
-  // Clamp para que no se salga de la imagen
+  // Clamp
   if (x < 0) x = 0;
   if (y < 0) y = 0;
   if (x + width > imageWidth) width = imageWidth - x;
@@ -446,76 +433,64 @@ async function createMaskFromAnalysis(analysis) {
 }
 
 // ===================================================
-//  🔥 FLUX-FILL-DEV — Inpainting en el cuarto real
+//  🔥 FLUX-FILL-DEV — con fallback para móvil / PC
 // ===================================================
 
-async function callReplicateInpaint({
-  roomImageUrl,
-  maskBase64,
-  prompt,
-  productCutoutUrl // reservado para futuros upgrades
-}) {
-  console.log("🧩 Enviando a FLUX-FILL-DEV INPAINT...");
-
+async function generateWithFlux({ roomImageUrl, maskBase64, prompt }) {
   const maskDataUrl = `data:image/png;base64,${maskBase64}`;
 
-  const createRes = await fetch(
-    `https://api.replicate.com/v1/models/${encodeURIComponent(
-      REPLICATE_MODEL_SLUG
-    )}/predictions`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${REPLICATE_API_TOKEN}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        input: {
-          image: roomImageUrl,
-          mask: maskDataUrl,
-          prompt: prompt,
-          guidance: 6,
-          num_inference_steps: 32,
-          output_format: "webp",
-          output_quality: 95,
-          megapixels: "match_input"
+  const configs = [
+    { steps: 28, mp: "match_input", guidance: 4.0 },
+    { steps: 24, mp: "1", guidance: 5.5 },
+    { steps: 20, mp: "0.7", guidance: 7.0 }
+  ];
+
+  for (const cfg of configs) {
+    try {
+      logStep("🧩 Enviando a FLUX", cfg);
+
+      const createRes = await fetch(
+        `https://api.replicate.com/v1/models/${encodeURIComponent(
+          REPLICATE_MODEL_SLUG
+        )}/predictions`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${REPLICATE_API_TOKEN}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            input: {
+              image: roomImageUrl,
+              mask: maskDataUrl,
+              prompt,
+              guidance: cfg.guidance,
+              num_inference_steps: cfg.steps,
+              output_format: "webp",
+              output_quality: 99,
+              megapixels: cfg.mp
+            }
+          })
         }
-      })
-    }
-  );
+      );
 
-  const prediction = await createRes.json();
+      const prediction = await createRes.json();
 
-  if (!prediction || (!prediction.id && !prediction.output)) {
-    console.error("❌ Replicate no inició predicción:", prediction);
-    throw new Error("Replicate no creó predicción — inputs/versión inválidos");
-  }
-
-  // Si el modelo responde en modo "sin colas" puede venir directamente con output
-  if (prediction.output && Array.isArray(prediction.output)) {
-    console.log("🟢 Resultado final FLUX (sin polling):", prediction.output[0]);
-    return prediction.output[0];
-  }
-
-  let result = prediction;
-  while (result.status !== "succeeded" && result.status !== "failed") {
-    await new Promise((r) => setTimeout(r, 1800));
-    const pollRes = await fetch(
-      `https://api.replicate.com/v1/predictions/${result.id}`,
-      {
-        headers: { Authorization: `Bearer ${REPLICATE_API_TOKEN}` }
+      if (prediction?.output?.[0]) {
+        console.log(
+          "🟢 Resultado final FLUX:",
+          prediction.output[0]
+        );
+        return prediction.output[0];
+      } else {
+        console.error("⛔ FLUX sin output en config", cfg, prediction);
       }
-    );
-    result = await pollRes.json();
+    } catch (e) {
+      console.error("Error llamando FLUX en config", cfg, e);
+    }
   }
 
-  if (result.status === "failed") {
-    console.error("💥 Falló INPAINT:", result);
-    throw new Error("Generación no completada");
-  }
-
-  console.log("🟢 Resultado final FLUX:", result.output?.[0]);
-  return result.output?.[0];
+  throw new Error("Flux-fill-dev no devolvió imagen en ningún intento");
 }
 
 // ================== COPY EMOCIONAL ==================
@@ -625,72 +600,48 @@ app.post(
       const maskBase64 = await createMaskFromAnalysis(analysis);
       logStep("Máscara generada correctamente");
 
-     // ====================== 7) IA FLUX-FILL-DEV **FINAL** ====================== //
+      // 7) Prompt ultra realista
+      const visual = productEmbedding
+        ? `
+Colores detectados: ${(productEmbedding.colors || []).join(", ")}
+Materiales: ${(productEmbedding.materials || []).join(", ")}
+Textura: ${productEmbedding.texture || "-"}
+Patrón: ${productEmbedding.pattern || "-"}`
+        : "";
 
-const visual = productEmbedding ? `
-Colores detectados: ${(productEmbedding.colors||[]).join(", ")}
-Materiales: ${(productEmbedding.materials||[]).join(", ")}
-Textura: ${productEmbedding.texture||"-"}
-Patrón: ${productEmbedding.pattern||"-"}`:"";
-
-const prompt = `
+      const prompt = `
 REAL PHOTO INPAINTING — alta fidelidad.
 
-Debes insertar *${effectiveProductName}* dentro del área blanca sin alterar el resto de la habitación.
+Tu misión es insertar "${effectiveProductName}" dentro del área blanca de la máscara,
+manteniendo el resto de la habitación intacta.
 
 Reglas obligatorias:
-• NO reemplazar paredes, muebles ni fondo completo.
-• Mantener perspectiva real de la cámara.
-• Mantener sombras e iluminación natural original.
-• Integración 100% fotográfica, nada artístico, nada surreal.
-• Solo modificar la zona blanca de la máscara.
-• Si el entorno está poco definido, mantenerlo en vez de inventar uno nuevo.
+- NO reemplazar paredes, muebles ni fondo completo.
+- Mantener perspectiva real de la cámara.
+- Mantener sombras e iluminación natural original.
+- Integración 100% fotográfica, nada artístico ni surreal.
+- Solo modificar la zona blanca de la máscara.
+- Si el entorno está poco definido, mantén lo existente antes de inventar uno nuevo.
 
+Estilo detectado del espacio: ${analysis.roomStyle || "desconocido"}.
 ${visual}
 `;
 
-logStep("🧩 Enviando a FLUX con config óptima móvil/PC...");
-
-const fluxReq = await fetch("https://api.replicate.com/v1/models/black-forest-labs/flux-fill-dev/predictions",{
-  method:"POST",
-  headers:{
-    "Authorization":`Bearer ${REPLICATE_API_TOKEN}`,
-    "Content-Type":"application/json"
-  },
-  body:JSON.stringify({
-    input:{
-      image:userImageUrl,
-      mask:`data:image/png;base64,${maskBase64}`,
-      prompt,
-      guidance:4.2,                // 🔥 balance realismo / flexibilidad
-      num_inference_steps:26,
-      output_format:"png",
-      output_quality:98,
-      megapixels:"match_input"
-    }
-  })
-});
-
-const flux = await fluxReq.json();
-if(!flux?.output?.[0]) throw new Error("Flux fail (sin output)");
-const generatedImage = flux.output[0];
-
-logStep("🟢 Resultado FINAL =>", { url:generatedImage });
-
-
-      // 8) Llamar a FLUX-FILL-DEV (Replicate)
-      const generatedImageUrlFromReplicate = await callReplicateInpaint({
+      // 8) Llamar a FLUX con fallback
+      const generatedImageUrlFromReplicate = await generateWithFlux({
         roomImageUrl: userImageUrl,
         maskBase64,
-        prompt,
-        productCutoutUrl
+        prompt
       });
 
       if (!generatedImageUrlFromReplicate) {
         throw new Error("Flux-fill-dev no devolvió imagen");
       }
 
-      console.log("🔥 URL RAW desde Replicate =>", generatedImageUrlFromReplicate);
+      console.log(
+        "🔥 URL RAW desde Replicate =>",
+        generatedImageUrlFromReplicate
+      );
 
       // 9) Subir resultado a Cloudinary
       const uploadGenerated = await uploadUrlToCloudinary(
@@ -725,7 +676,7 @@ logStep("🟢 Resultado FINAL =>", { url:generatedImage });
         elapsedMs: Date.now() - startedAt
       });
 
-      // 12) Respuesta final
+      // 12) Respuesta final (shape que usa tu frontend)
       return res.status(200).json({
         ok: true,
         status: "complete",
