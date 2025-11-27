@@ -556,23 +556,68 @@ app.post(
       // 6) Máscara
       const maskBase64 = await createMaskFromAnalysis(analysis);
 
-     // 7) Replicate inpainting
-const prompt = `
-Inserta este producto dentro del cuarto de forma realista.
-- Mantén su proporción real.
-- No alteres el cuarto innecesariamente.
-- Integra el producto respetando sombras y luz.
-- Estilo del espacio: ${analysis.roomStyle || "moderno"}.
-Producto a insertar → ${effectiveProductName}.
-Si es un cuadro, colócalo en la pared con perspectiva natural.
+        // 7) Replicate inpainting — prompt ULTRA ESTRICTO usando el embedding visual
+      const visualHints = productEmbedding
+        ? `
+Colores principales del producto: ${(productEmbedding.colors || []).join(", ")}.
+Materiales: ${(productEmbedding.materials || []).join(", ")}.
+Textura: ${productEmbedding.texture || ""}.
+Patrón o diseño: ${productEmbedding.pattern || ""}.
+`
+        : "";
+
+      const prompt = `
+Eres un modelo experto en interiorismo realista y fotorealismo. 
+Tienes una fotografía REAL de un espacio y debes INTEGRAR UN ÚNICO producto de decoración en la zona marcada por la máscara.
+
+Producto a integrar (NO inventes otro distinto):
+${effectiveProductName}.
+
+${visualHints}
+
+Reglas OBLIGATORIAS:
+1. No cambies la arquitectura del espacio (paredes, techo, ventanas, puertas se quedan igual).
+2. No muevas ni borres muebles existentes, sólo integra el producto en la zona enmascarada.
+3. Mantén el estilo del espacio: ${analysis.roomStyle || "tu espacio"}.
+4. Mantén iluminación, sombras y perspectiva coherentes con la foto original.
+5. El producto debe verse protagonista, nítido y realista, como si realmente estuviera en la foto.
+6. No agregues texto, logos ni elementos extra que no sean necesarios.
+
+Si el producto es un CUADRO:
+- Colócalo en la pared de forma coherente.
+- A una altura natural (aproximadamente a la altura de los ojos).
+- Centrado respecto al mueble principal más cercano.
+- Con proporciones realistas (ni gigante ni diminuto).
+
+Genera UNA sola imagen final muy realista del MISMO espacio, con el producto integrado en la zona marcada.
 `;
 
-const generatedImageUrlFromReplicate = await callReplicateInpaint({
-  roomImageUrl: userImageUrl,
-  productCutoutUrl,    // 🔥 ESTA LÍNEA ES LA QUE FALTABA
-  maskBase64,
-  prompt
-});
+      const generatedImageUrlFromReplicate = await callReplicateInpaint({
+        roomImageUrl: userImageUrl,
+        maskBase64,
+        prompt
+      });
+
+      // 8) Subir resultado a Cloudinary (SE LOGUEA LA URL ORIGINAL PARA DEBUG)
+      console.log("🔥 URL RAW desde Replicate =>", generatedImageUrlFromReplicate);
+
+      const uploadGenerated = await uploadUrlToCloudinary(
+        generatedImageUrlFromReplicate,
+        "innotiva/generated",
+        "room-generated"
+      );
+
+      const generatedImageUrl = uploadGenerated.secure_url;
+      const generatedPublicId = uploadGenerated.public_id;
+
+      const thumbnails = {
+        before: buildThumbnails(roomPublicId),
+        after: buildThumbnails(generatedPublicId)
+      };
+
+      if (!userImageUrl || !generatedImageUrl) {
+        throw new Error("Imágenes incompletas (antes/después).");
+      }
 
 
       // 8) Subir resultado a Cloudinary (SE LOGUEA LA URL ORIGINAL PARA DEBUG)
