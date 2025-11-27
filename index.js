@@ -547,12 +547,6 @@ Si el producto es un cuadro, colócalo en la pared de forma coherente.
         prompt
       });
 
-      // 7) Replicate inpainting
-const generatedImageUrlFromReplicate = await callReplicateInpaint({
-  roomImageUrl: userImageUrl,
-  maskBase64,
-  prompt
-});
 
 // 8) Subir resultado a Cloudinary (SE LOGUEA LA URL ORIGINAL PARA DEBUG)
 console.log("🔥 URL RAW desde Replicate =>", generatedImageUrlFromReplicate);
