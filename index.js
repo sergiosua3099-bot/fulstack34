@@ -31,8 +31,9 @@ const SHOPIFY_STORE_DOMAIN = process.env.SHOPIFY_STORE_DOMAIN;
 const SHOPIFY_STOREFRONT_TOKEN = process.env.SHOPIFY_STOREFRONT_TOKEN;
 
 const REPLICATE_API_TOKEN = process.env.REPLICATE_API_TOKEN;
-// ⚠️ Debe ser el **ID DE VERSIÓN** (no el nombre corto del modelo)
-const REPLICATE_MODEL_VERSION = process.env.REPLICATE_MODEL_VERSION;
+// ⚠️ Debe ser el ID DE VERSIÓN (no el nombre corto del modelo)
+const REPLICATE_MODEL_VERSION =
+  process.env.REPLICATE_MODEL_VERSION || "nbhx3kj26srm80ck9rwbscz1q0";
 
 // ================== MIDDLEWARE ==================
 
@@ -75,7 +76,11 @@ function safeParseJSON(raw, label = "JSON") {
 
 // ================== CLOUDINARY HELPERS ==================
 
-async function uploadBufferToCloudinary(buffer, folder, filenameHint = "image") {
+async function uploadBufferToCloudinary(
+  buffer,
+  folder,
+  filenameHint = "image"
+) {
   return new Promise((resolve, reject) => {
     const base64 = buffer.toString("base64");
     cloudinary.uploader.upload(
@@ -92,7 +97,11 @@ async function uploadBufferToCloudinary(buffer, folder, filenameHint = "image") 
   });
 }
 
-async function uploadUrlToCloudinary(url, folder, filenameHint = "image-from-url") {
+async function uploadUrlToCloudinary(
+  url,
+  folder,
+  filenameHint = "image-from-url"
+) {
   return new Promise((resolve, reject) => {
     cloudinary.uploader.upload(
       url,
@@ -441,54 +450,93 @@ async function createMaskFromAnalysis(analysis) {
 }
 
 // ===================================================
-//  🔥 FLUX INPAINT MODE REAL — Inserción con producto real
+//  🔥 FLUX-FILL-DEV INPAINT — Inserción con producto real
 // ===================================================
-async function callReplicateInpaint({ roomImageUrl, maskBase64, prompt, productCutoutUrl }) {
 
+async function callReplicateInpaint({
+  roomImageUrl,
+  maskBase64,
+  prompt,
+  productCutoutUrl
+}) {
   console.log("🧩 Enviando a FLUX-FILL-DEV INPAINT...");
 
-  const predict = await fetch("https://api.replicate.com/v1/predictions", {
+  const body = {
+    version: REPLICATE_MODEL_VERSION, // ✅ versión requerida por la API
+    input: {
+      image: roomImageUrl,
+      mask: `data:image/png;base64,${maskBase64}`,
+      prompt,
+      // referencia visual del producto (si el modelo la soporta)
+      reference_image: productCutoutUrl,
+      // puedes ajustar estos si el modelo los soporta
+      // guidance: 7,
+      // steps: 32,
+      // seed: 42,
+    }
+  };
+
+  const prediction = await fetch("https://api.replicate.com/v1/predictions", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${REPLICATE_API_TOKEN}`,
-      "Content-Type": "application/json",
+      "Content-Type": "application/json"
     },
-    body: JSON.stringify({
-      model: "black-forest-labs/flux-fill-dev", // 🧠 MODELO REAL Y EXISTENTE
-      input: {
-        image: roomImageUrl,
-        mask: `data:image/png;base64,${maskBase64}`,
-        prompt: prompt,
-        reference_image: productCutoutUrl,   // 👑 INSERTA EL PRODUCTO REAL
-        guidance: 7,
-        steps: 32,
-        seed: 42
-      }
-    })
-  }).then(r => r.json());
+    body: JSON.stringify(body)
+  }).then((r) => r.json());
 
-  if (!predict || !predict.id) {
-    console.error("❌ Replicate no inició predicción:", predict);
-    throw new Error("Predicción fallida — modelo o input inválido");
+  if (!prediction || !prediction.id) {
+    console.error("❌ Replicate no inició predicción:", prediction);
+    throw new Error("Replicate no creó predicción — inputs/versión inválidos");
   }
 
-  let result = predict;
+  let result = prediction;
   while (result.status !== "succeeded" && result.status !== "failed") {
-    await new Promise(r => setTimeout(r, 1600));
-    result = await fetch(`https://api.replicate.com/v1/predictions/${predict.id}`, {
-      headers: { Authorization: `Bearer ${REPLICATE_API_TOKEN}` }
-    }).then(r => r.json());
+    await new Promise((r) => setTimeout(r, 1700));
+    result = await fetch(
+      `https://api.replicate.com/v1/predictions/${prediction.id}`,
+      {
+        headers: { Authorization: `Bearer ${REPLICATE_API_TOKEN}` }
+      }
+    ).then((r) => r.json());
   }
 
   if (result.status === "failed") {
     console.error("💥 Falló INPAINT:", result);
-    throw new Error("Generación no completada");
+    throw new Error("Predicción fallida — modelo o input inválido");
   }
 
-  console.log("🟢 Resultado final:", result.output?.[0]);
-  return result.output?.[0];
+  const outputUrl = Array.isArray(result.output)
+    ? result.output[0]
+    : result.output;
+
+  if (!outputUrl) {
+    throw new Error("Salida inválida de Replicate");
+  }
+
+  console.log("🟢 Imagen generada por FLUX-FILL-DEV:", outputUrl);
+  return outputUrl;
 }
 
+// ================== COPY EMOCIONAL ==================
+
+function buildEmotionalCopy({ roomStyle, productName, idea }) {
+  const base = roomStyle || "tu espacio";
+
+  let msg = `Diseñamos esta propuesta pensando en ${base}.`;
+
+  if (productName) {
+    msg += ` Integrando ${productName} como protagonista, buscamos un equilibrio entre estilo y calidez.`;
+  }
+
+  if (idea && idea.trim().length > 0) {
+    msg += ` También tuvimos en cuenta tu idea: “${idea.trim()}”.`;
+  }
+
+  msg += ` Así puedes visualizar cómo se vería tu espacio antes de tomar la decisión final.`;
+
+  return msg;
+}
 
 // ================== ENDPOINT PRINCIPAL ==================
 
@@ -620,7 +668,10 @@ Genera UNA sola imagen final muy realista del MISMO espacio real, con el product
       });
 
       // 9) Subir resultado a Cloudinary
-      console.log("🔥 URL RAW desde Replicate =>", generatedImageUrlFromReplicate);
+      console.log(
+        "🔥 URL RAW desde Replicate =>",
+        generatedImageUrlFromReplicate
+      );
 
       const uploadGenerated = await uploadUrlToCloudinary(
         generatedImageUrlFromReplicate,
