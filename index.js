@@ -735,7 +735,7 @@ app.post("/experiencia-premium", upload.single("roomImage"), async (req, res) =>
 // ======================= 10) SUBIR RESULTADO A CLOUDINARY ==================== //
 
 const uploadGenerated = await uploadUrlToCloudinary(
-  generatedImageUrlFromReplicate,
+  generatedImageUrl,
   "innotiva/generated",
   "room-generated"
 );
