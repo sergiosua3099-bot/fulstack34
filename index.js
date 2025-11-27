@@ -439,37 +439,62 @@ async function createMaskFromAnalysis(analysis) {
 
   return pngBuffer.toString("base64");
 }
-
 // =========================================
-//  🟦 AUTO-MASK + SDXL INPAINT FINAL
+//  🔥 FLUX-FILL-DEV — Inpainting con inserción real del producto
 // =========================================
 
-async function generateMask(productCutoutUrl) {
-  const productBuffer = await fetch(productCutoutUrl).then(res => res.arrayBuffer());
-  const productImage = Buffer.from(productBuffer);
+async function callReplicateInpaint({ roomImageUrl, maskBase64, prompt, productCutoutUrl }) {
+  console.log("🧩 Enviando a FLUX-FILL-DEV con referencia real...");
 
-  // Sharp convierte el producto a grayscale → threshold → transparente donde no hay objeto
-  const maskBuffer = await sharp(productImage)
-    .removeAlpha()
-    .greyscale()
-    .threshold(180)      // ← ajustable, si el producto se pierde bajar a 150
-    .toFormat("png")
-    .toBuffer();
+  const modelVersion = "nbhx3kj26srm80ck9rwbscz1q0"; // MODELO OFICIAL y válido EN Replicate
 
-  const upload = await cloudinary.uploader.upload_stream({
-    folder: "innotiva/masks",
-    public_id: "mask-" + Date.now(),
-    overwrite: true,
-    resource_type: "image"
-  });
+  try {
+    const predict = await fetch("https://api.replicate.com/v1/predictions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${REPLICATE_API_TOKEN}`,
+      },
+      body: JSON.stringify({
+        version: modelVersion,
+        input: {
+          image: roomImageUrl,                    // Imagen real del cliente
+          mask: `data:image/png;base64,${maskBase64}`, // Zona donde se puede modificar
+          reference_image: productCutoutUrl,      // PRODUCTO recortado real (clave 🔥)
+          prompt: prompt,                         // Prompt premium que ya construimos
+          steps: 40,
+          guidance: 6,
+          seed: 42
+        }
+      })
+    }).then(r => r.json());
 
-  return new Promise((resolve, reject) => {
-    const stream = cloudinary.uploader.upload_stream(
-      { folder: "innotiva/masks" },
-      (err, result) => err ? reject(err) : resolve(result.secure_url)
-    );
-    stream.end(maskBuffer);
-  });
+    if (!predict || !predict.id) {
+      console.error("❌ Replicate no inició predicción:", predict);
+      throw new Error("Replicate no creó predicción — inputs inválidos");
+    }
+
+    // Esperar hasta finalizar render
+    let result = predict;
+    while (result.status !== "succeeded" && result.status !== "failed") {
+      await new Promise(r => setTimeout(r, 2000));
+      result = await fetch(`https://api.replicate.com/v1/predictions/${predict.id}`, {
+        headers: { Authorization: `Bearer ${REPLICATE_API_TOKEN}` }
+      }).then(r => r.json());
+    }
+
+    if (result.status === "failed") {
+      console.error("❌ Falló inpainting:", result);
+      throw new Error("Generación fallida Replicate");
+    }
+
+    console.log("🟩 Imagen fusionada con producto:", result.output?.[0]);
+    return result.output?.[0];  // URL final lista para Cloudinary
+
+  } catch (error) {
+    console.error("🔥 ERROR callReplicateInpaint:", error);
+    throw new Error("No prediction created ❌");
+  }
 }
 
 
