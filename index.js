@@ -440,46 +440,38 @@ async function createMaskFromAnalysis(analysis) {
   return pngBuffer.toString("base64");
 }
 // ==================================================================================
-// 🔥 MODO MÁXIMO — Replicate FLUX 1.1 PRO INPAINT + CONTROLNET + PRODUCTO REAL
+// 🔥 Replicate — FLUX INPAINT + REFERENCIA REAL DEL PRODUCTO
 // ==================================================================================
 async function callReplicateInpaint({ roomImageUrl, maskBase64, productCutoutUrl, prompt }) {
   try {
-    console.log("🚀 Enviando a Replicate — MODO EXTREMO CONTROLADO");
+    console.log("🚀 Enviando a Replicate — FLUX INPAINT + REFERENCIA REAL");
 
     const body = {
       input: {
         prompt,
 
-        // 🔹 Imagen real del usuario — la base NO se toca fuera del mask
+        // 📌 Imagen real del cliente
         init_image: roomImageUrl,
-
-        // 🔹 Máscara: solo la zona blanca será editada
         mask: maskBase64,
 
-        // 🔥 Imagen del producto REAL (casi obligatorio para copiarlo fielmente)
-        control_image: productCutoutUrl,
-        controlnet_conditioning_scale: 1.0,     // ↑ más alto = más fiel al producto
-        controlnet_scale: 0.85,                 // equilibrio realismo/respeto a entorno
+        // 📌 Producto real como referencia de estilo (clave del realismo)
+        reference_image: productCutoutUrl,
+        reference_strength: 0.85,
 
-        // Mantener fondo original → clave de tu negocio
-        mode: "inpaint",
+        // Mantener el ambiente original
         preserve_init_image: true,
+        strength: 0.22,
+        guidance_scale: 3.0,
 
-        // Comportamiento
-        strength: 0.15,            // BAJO = cuida el cuarto
-        prompt_strength: 0.25,     // Prompts suaves para no destruir arquitectura
-        guidance_scale: 3.2,       // Alto = sigue instrucciones con firmeza
-
-        // Calidad alta
         width: 1024,
         height: 1024,
-        num_inference_steps: 60,   // alto detalle
-        seed: Math.floor(Math.random() * 1e9)    // resultados únicos
+        num_inference_steps: 55,
+        seed: Math.floor(Math.random() * 1000000000)
       }
     };
 
     let prediction = await fetch(
-      "https://api.replicate.com/v1/models/black-forest-labs/flux-1.1-pro-inpainting-controlnet/predictions",
+      "https://api.replicate.com/v1/models/black-forest-labs/flux-1.1-pro-inpainting/predictions",
       {
         method: "POST",
         headers: {
@@ -490,9 +482,13 @@ async function callReplicateInpaint({ roomImageUrl, maskBase64, productCutoutUrl
       }
     ).then(r => r.json());
 
-    if (!prediction.id) throw new Error("No prediction created ❌");
+    // Validación si el server rechazó request
+    if (!prediction.id) {
+      console.log("❌ Response inesperada:", prediction);
+      throw new Error("Replicate no creó predicción — modelo/inputs inválidos");
+    }
 
-    // Wait until image finishes
+    // Polling hasta terminar
     while (!["succeeded", "failed"].includes(prediction.status)) {
       await new Promise(r => setTimeout(r, 2000));
       prediction = await fetch(
@@ -501,18 +497,14 @@ async function callReplicateInpaint({ roomImageUrl, maskBase64, productCutoutUrl
       ).then(r => r.json());
     }
 
-    if (prediction.status === "failed") throw new Error("Replicate failed ❌");
+    if (prediction.status === "failed")
+      throw new Error("Replicate falló generando imagen");
 
-    const output = prediction.output;
-    const finalUrl = Array.isArray(output) ? output[0] : output;
-
-    if (!finalUrl.startsWith("http")) throw new Error("Invalid Replicate URL");
-
-    console.log("🟢 URL FINAL:", finalUrl);
-    return finalUrl;
+    // Normalización de output
+    return Array.isArray(prediction.output) ? prediction.output[0] : prediction.output;
 
   } catch (err) {
-    console.error("🔥 ERROR callReplicateInpaint", err);
+    console.error("🔥 ERROR callReplicateInpaint:", err);
     throw err;
   }
 }
