@@ -353,25 +353,34 @@ async function createMaskFromAnalysis(analysis) {
 // ================== REPLICATE ==================
 
 async function callReplicateInpaint({ roomImageUrl, maskBase64, prompt }) {
+
   if (!REPLICATE_API_TOKEN || !REPLICATE_MODEL_VERSION) {
-    throw new Error("Falta configuración de Replicate (token o versión de modelo)");
+    throw new Error("⚠️ Falta REPLICATE_API_TOKEN o REPLICATE_MODEL_VERSION");
   }
 
-  logStep("INNOTIVA Replicate: generando imagen…", { model: REPLICATE_MODEL_VERSION });
+  logStep("INNOTIVA Replicate: generando imagen…", {
+    model: "electronstudio/flux-inpaint",
+    version: REPLICATE_MODEL_VERSION
+  });
 
   const body = {
-    version: REPLICATE_MODEL_VERSION,
+    model: "electronstudio/flux-inpaint",   // 🔥 modelo correcto (ya no hashes)
+    version: REPLICATE_MODEL_VERSION,       // 🔥 aquí va el versionID real tuyo
     input: {
       image: roomImageUrl,
       mask: `data:image/png;base64,${maskBase64}`,
-      prompt
+      prompt,
+      seed: Math.floor(Math.random() * 999999999),
+      num_steps: 28,
+      guidance: 3.5
     }
   };
 
+  // Crear predicción
   const res = await fetch("https://api.replicate.com/v1/predictions", {
     method: "POST",
     headers: {
-      Authorization: `Token ${REPLICATE_API_TOKEN}`,
+      Authorization: `Bearer ${REPLICATE_API_TOKEN}`,  // 👈 Importante que sea Bearer
       "Content-Type": "application/json"
     },
     body: JSON.stringify(body)
@@ -380,39 +389,30 @@ async function callReplicateInpaint({ roomImageUrl, maskBase64, prompt }) {
   const prediction = await res.json();
 
   if (!res.ok) {
-    console.error("Replicate error (create):", prediction);
-    throw new Error("Replicate: la creación de predicción falló");
+    console.error("REP_ERR:", prediction);
+    throw new Error("Replicate falló al crear predicción");
   }
 
-  let finalPrediction = prediction;
-
-  while (
-    finalPrediction.status === "starting" ||
-    finalPrediction.status === "processing"
-  ) {
+  // Polling hasta que termine
+  let result = prediction;
+  while (result.status === "starting" || result.status === "processing") {
     await new Promise(r => setTimeout(r, 2000));
 
-    const pollRes = await fetch(
-      `https://api.replicate.com/v1/predictions/${prediction.id}`,
-      {
-        headers: { Authorization: `Token ${REPLICATE_API_TOKEN}` }
-      }
-    );
-    finalPrediction = await pollRes.json();
+    const poll = await fetch(`https://api.replicate.com/v1/predictions/${prediction.id}`, {
+      headers: { Authorization: `Bearer ${REPLICATE_API_TOKEN}` }
+    });
+
+    result = await poll.json();
   }
 
-  logStep("Replicate final:", { status: finalPrediction.status });
-
-  if (finalPrediction.status !== "succeeded") {
-    console.error("Replicate final error:", finalPrediction);
-    throw new Error("Replicate falló");
+  if (result.status !== "succeeded") {
+    console.error("Replicate final error:", result);
+    throw new Error("Replicate no generó imagen");
   }
 
-  const output = finalPrediction.output;
-  const imageUrl = Array.isArray(output) ? output[0] : output;
-
-  return imageUrl;
+  return Array.isArray(result.output) ? result.output[0] : result.output;
 }
+
 
 // ================== COPY EMOCIONAL ==================
 
