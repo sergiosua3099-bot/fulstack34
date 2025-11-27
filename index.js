@@ -408,8 +408,12 @@ async function callReplicateInpaint({ roomImageUrl, maskBase64, prompt }) {
 
     let prediction = await response.json();
 
-    if (!prediction.id) throw new Error("No se pudo crear la predicción");
+    if (!prediction.id) {
+      console.log("REP ERR =>", prediction);
+      throw new Error("No se pudo crear la predicción en Replicate");
+    }
 
+    // 🔄 Esperar resultado
     while (prediction.status !== "succeeded" && prediction.status !== "failed") {
       await new Promise(r => setTimeout(r, 2000));
       const check = await fetch(
@@ -421,13 +425,31 @@ async function callReplicateInpaint({ roomImageUrl, maskBase64, prompt }) {
       prediction = await check.json();
     }
 
-    if (prediction.status === "failed") throw new Error("Fallo Replicate");
+    if (prediction.status === "failed") {
+      console.log("REP FAILED =>", prediction);
+      throw new Error("Replicate falló");
+    }
 
-    const finalUrl =
-      prediction.output?.[0] ||
-      prediction.output?.image ||
-      prediction.output_url ||
-      null;
+    console.log("[INNOTIVA] IA generada ✔");
+
+    // 🧠 Normalizar la salida para evitar el bug de "h"
+    let finalUrl = null;
+    const out = prediction.output;
+
+    if (typeof out === "string") {
+      // Caso: output es directamente una URL string
+      finalUrl = out;
+    } else if (Array.isArray(out) && out.length > 0) {
+      // Caso: array de URLs
+      finalUrl = out[0];
+    } else if (out && typeof out === "object" && out.image) {
+      // Caso: objeto con campo image
+      finalUrl = out.image;
+    }
+
+    if (!finalUrl && prediction.output_url) {
+      finalUrl = prediction.output_url;
+    }
 
     console.log("🔵 URL FINAL DE REPLICATE:", finalUrl);
 
@@ -437,30 +459,6 @@ async function callReplicateInpaint({ roomImageUrl, maskBase64, prompt }) {
     throw e;
   }
 }
-
-
-    // 🔄 Esperar resultado
-    let result = prediction;
-    while (result.status !== "succeeded" && result.status !== "failed") {
-      await new Promise(r => setTimeout(r, 2000));
-      const check = await fetch(
-        `https://api.replicate.com/v1/predictions/${prediction.id}`,
-        { headers: { "Authorization": `Bearer ${process.env.REPLICATE_API_TOKEN}` }}
-      );
-      result = await check.json();
-    }
-
-    if (result.status === "failed") throw new Error("Replicate falló");
-
-    console.log("[INNOTIVA] IA generada ✔");
-    return result.output?.[0];
-
-  } catch (err) {
-    console.log("🔥 ERROR FLUX 1.1 PRO =>", err);
-    throw err;
-  }
-}
-
 
 // ================== COPY EMOCIONAL ==================
 
@@ -574,29 +572,27 @@ Si el producto es un cuadro, colócalo en la pared de forma coherente.
         prompt
       });
 
+      // 8) Subir resultado a Cloudinary (SE LOGUEA LA URL ORIGINAL PARA DEBUG)
+      console.log("🔥 URL RAW desde Replicate =>", generatedImageUrlFromReplicate);
 
-// 8) Subir resultado a Cloudinary (SE LOGUEA LA URL ORIGINAL PARA DEBUG)
-console.log("🔥 URL RAW desde Replicate =>", generatedImageUrlFromReplicate);
+      const uploadGenerated = await uploadUrlToCloudinary(
+        generatedImageUrlFromReplicate, // <-- AQUÍ SE USA DIRECTO
+        "innotiva/generated",
+        "room-generated"
+      );
 
-const uploadGenerated = await uploadUrlToCloudinary(
-  generatedImageUrlFromReplicate,       // <-- AQUÍ SE USA DIRECTO
-  "innotiva/generated",
-  "room-generated"
-);
+      const generatedImageUrl = uploadGenerated.secure_url;
+      const generatedPublicId = uploadGenerated.public_id;
 
-const generatedImageUrl = uploadGenerated.secure_url;
-const generatedPublicId = uploadGenerated.public_id;
+      const thumbnails = {
+        before: buildThumbnails(roomPublicId),
+        after: buildThumbnails(generatedPublicId)
+      };
 
-const thumbnails = {
-  before: buildThumbnails(roomPublicId),
-  after: buildThumbnails(generatedPublicId)
-};
+      if (!userImageUrl || !generatedImageUrl) {
+        throw new Error("Imágenes incompletas (antes/después).");
+      }
 
-if (!userImageUrl || !generatedImageUrl) {
-  throw new Error("Imágenes incompletas (antes/después).");
-}
-
-      
       // 9) Copy emocional
       const message = buildEmotionalCopy({
         roomStyle: analysis.roomStyle,
@@ -625,20 +621,20 @@ if (!userImageUrl || !generatedImageUrl) {
         elapsedMs: Date.now() - startedAt
       });
 
-     // ====================== RESPUESTA FINAL BACKEND 🔥 ======================
-return res.status(200).json({
-  ok: true,
-  status: "complete",
-  room_image: userImageUrl,
-  ai_image: generatedImageUrl,
-  product_url: productUrl || null,
-  product_name: effectiveProductName,
-  message,
-  analysis,
-  thumbnails,
-  embedding: productEmbedding || null,
-  created_at: new Date().toISOString()
-});
+      // ====================== RESPUESTA FINAL BACKEND 🔥 ======================
+      return res.status(200).json({
+        ok: true,
+        status: "complete",
+        room_image: userImageUrl,
+        ai_image: generatedImageUrl,
+        product_url: productUrl || null,
+        product_name: effectiveProductName,
+        message,
+        analysis,
+        thumbnails,
+        embedding: productEmbedding || null,
+        created_at: new Date().toISOString()
+      });
 
     } catch (err) {
       console.error("Error en /experiencia-premium:", err);
