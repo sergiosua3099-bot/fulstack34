@@ -616,11 +616,44 @@ app.post(
       );
       analysis.finalPlacement = refinedPlacement;
 
-    // ============================ 7) CREAR MÁSCARA =============================== //
+    // ===================== 7) FLUX-FILL-DEV — IMPLEMENTACIÓN REAL ===================== //
 
-logStep("Generando máscara...");
-const maskBase64 = await createMaskFromAnalysis(analysis);
-logStep("Máscara generada correctamente");
+let generatedImageUrlFromReplicate;
+
+try {
+  logStep("🧩 Enviando máscara + imagen a flux-fill-dev...");
+
+  const output = await replicate.run(
+    "black-forest-labs/flux-fill-dev",
+    {
+      input: {
+        image: userImageUrl,                           // url cloudinary de la foto original
+        mask: `data:image/png;base64,${maskBase64}`,    // máscara generada por el paso 6
+        prompt: prompt,                                 // prompt ultra realista
+        guidance: 6,
+        num_inference_steps: 32,
+        output_format: "webp",
+        output_quality: 95,
+        megapixels: "1"                                 // estable para móvil + pc
+      }
+    }
+  );
+
+  // 🚨 OJO — aquí está el secreto!
+  // output NO es un string → es un objeto con métodos embed(), url()
+  generatedImageUrlFromReplicate = output?.[0]?.url();
+
+  if (!generatedImageUrlFromReplicate) {
+    console.log("RAW OUTPUT:", output);
+    throw new Error("Flux-fill-dev no devolvió imagen utilizable");
+  }
+
+  console.log("🟢 IA LISTA =>", generatedImageUrlFromReplicate);
+
+} catch (error) {
+  console.error("🚨 Error en flux-fill-dev:", error);
+  return res.status(500).json({ status:"error", message:"Fallo en generación AI" });
+}
 
 
 // ============================ 8) PROMPT REALISTA ============================ //
