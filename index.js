@@ -1,4 +1,4 @@
-// index.js
+// index.js 
 // INNOTIVA BACKEND PRO - /experiencia-premium
 
 require("dotenv").config();
@@ -210,7 +210,6 @@ async function buildProductEmbedding(product, productCutoutUrl) {
 
   logStep("OpenAI: embedding del producto", { title: product.title });
 
-  // 0) Descargar la imagen de Cloudinary y convertirla a BASE64 (data URL)
   let base64Image;
   try {
     const imgRes = await fetch(imageUrl);
@@ -230,7 +229,6 @@ async function buildProductEmbedding(product, productCutoutUrl) {
     return null;
   }
 
-  // 1) Prompt para que GPT devuelva SOLO JSON
   const prompt = `
 Analiza únicamente el producto que aparece en la imagen y devuélveme SOLO un JSON puro, sin texto extra.
 Estructura EXACTA:
@@ -243,7 +241,6 @@ Estructura EXACTA:
 }
 `;
 
-  // 2) Llamada a OpenAI con imagen en BASE64 (NO URL externa)
   const response = await openai.responses.create({
     model: "gpt-4.1-mini",
     input: [
@@ -257,7 +254,6 @@ Estructura EXACTA:
     ]
   });
 
-  // 3) Extraer el texto devuelto por el modelo
   const content = response.output?.[0]?.content || [];
   const text = content
     .filter((c) => c.type === "output_text")
@@ -265,7 +261,6 @@ Estructura EXACTA:
     .join("\n")
     .trim();
 
-  // 4) Parsear a JSON usando tu helper existente
   const embedding = safeParseJSON(text, "embedding");
   return embedding;
 }
@@ -349,9 +344,9 @@ function determineMaskPosition(analysis, productType = "", ideaText = "") {
   const imageWidth = analysis.imageWidth || 1200;
   const imageHeight = analysis.imageHeight || 800;
 
-  // Tamaño base razonable
-  let width = Math.round(imageWidth * 0.45);
-  let height = Math.round(imageHeight * 0.35);
+  // Tamaño base razonable (más pequeño para no rehacer todo)
+  let width = Math.round(imageWidth * 0.28);
+  let height = Math.round(imageHeight * 0.22);
   let x = Math.round((imageWidth - width) / 2);
   let y = Math.round((imageHeight - height) / 2);
 
@@ -444,6 +439,7 @@ async function createMaskFromAnalysis(analysis) {
 
   return pngBuffer.toString("base64");
 }
+
 // ==================================================================================
 // 🔥 Replicate con DOS IMÁGENES → habitación real + producto real
 // ==================================================================================
@@ -461,20 +457,20 @@ async function callReplicateInpaint({ roomImageUrl, maskBase64, prompt, productC
         // 📌 Máscara: zona permitida para insertar producto
         mask: maskBase64,
 
-        // 📌 Imagen REAL del producto — AQUÍ VA LA 2ª IMAGEN
+        // 📌 Imagen REAL del producto — 2ª IMAGEN
         conditioning_image: productCutoutUrl,
-        conditioning_scale: 1.0,   // mientras más alto, más se respeta visualmente el producto
+        conditioning_scale: 1.0,
 
-        // 🔥 Modo INPAINT REAL → ahora SÍ usará la habitación original
+        // 🔥 Modo INPAINT REAL
         mode: "image_inpaint",
-        preserve_background: true,     
-        strength: 0.35,            // cuánto puede modificar (ideal 0.30-0.45)
+        preserve_background: true,
+        strength: 0.35,
 
         width: 1024,
         height: 1024,
 
-        num_inference_steps: 42,   // mejor detalle que 28
-        guidance_scale: 3.0,       // menos invento, más obediencia
+        num_inference_steps: 42,
+        guidance_scale: 3.0,
         guidance_rescale: 0.08,
         seed: Math.floor(Math.random() * 9999999)
       }
@@ -501,57 +497,14 @@ async function callReplicateInpaint({ roomImageUrl, maskBase64, prompt, productC
       )).json();
     }
 
-    if (!prediction.output || !prediction.output[0]) throw new Error("Sin salida de Replicate");
+    if (!prediction.output || !prediction.output[0]) {
+      throw new Error("Sin salida de Replicate");
+    }
     return prediction.output[0];
 
   } catch (error) {
     console.error("🔥 Error en inpainting con 2 imágenes:", error);
     throw error;
-  }
-}
-
-
-    // 🔄 Esperar resultado
-    while (prediction.status !== "succeeded" && prediction.status !== "failed") {
-      await new Promise(r => setTimeout(r, 2000));
-      const check = await fetch(
-        `https://api.replicate.com/v1/predictions/${prediction.id}`,
-        {
-          headers: { Authorization: `Bearer ${process.env.REPLICATE_API_TOKEN}` }
-        }
-      );
-      prediction = await check.json();
-    }
-
-    if (prediction.status === "failed") {
-      console.log("REP FAILED =>", prediction);
-      throw new Error("Replicate falló");
-    }
-
-    console.log("[INNOTIVA] IA generada ✔");
-
-    // Normalizar salida
-    let finalUrl = null;
-    const out = prediction.output;
-
-    if (typeof out === "string") {
-      finalUrl = out;
-    } else if (Array.isArray(out) && out.length > 0) {
-      finalUrl = out[0];
-    } else if (out && typeof out === "object" && out.image) {
-      finalUrl = out.image;
-    }
-
-    if (!finalUrl && prediction.output_url) {
-      finalUrl = prediction.output_url;
-    }
-
-    console.log("🔵 URL FINAL DE REPLICATE:", finalUrl);
-
-    return finalUrl;
-  } catch (e) {
-    console.error("🔥 ERROR INPAINT REPLICATE", e);
-    throw e;
   }
 }
 
@@ -695,13 +648,12 @@ REGLAS OBLIGATORIAS:
 Genera UNA sola imagen final muy realista del MISMO espacio real, con el producto integrado dentro de la zona marcada por la máscara.
 `;
 
-     const generatedImageUrlFromReplicate = await callReplicateInpaint({
-  roomImageUrl: userImageUrl,
-  maskBase64,
-  prompt,
-+ productCutoutUrl    // ← ESTA ES LA 2ª IMAGEN
-});
-
+      const generatedImageUrlFromReplicate = await callReplicateInpaint({
+        roomImageUrl: userImageUrl,
+        maskBase64,
+        prompt,
+        productCutoutUrl
+      });
 
       // 9) Subir resultado a Cloudinary
       console.log("🔥 URL RAW desde Replicate =>", generatedImageUrlFromReplicate);
