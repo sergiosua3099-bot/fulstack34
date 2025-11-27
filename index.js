@@ -440,89 +440,96 @@ async function createMaskFromAnalysis(analysis) {
   return pngBuffer.toString("base64");
 }
 
-// ==================================================================================
-// 🧠 REPLICATE — SDXL INPAINTING + PRODUCTO REAL FORZADO A INSERTAR
-// ==================================================================================
-async function callReplicateInpaint({ roomImageUrl, productCutoutUrl, prompt }) {
-  try {
-    console.log("🧩 Replicate PRO — Insertando producto real en escena...");
+// =========================================
+//  🟦 AUTO-MASK + SDXL INPAINT FINAL
+// =========================================
 
-    const body = {
-      version: "stability-ai/sdxl-inpainting-1.0",  // MODELO SDXL PARA INPAINT ✔
-      input: {
-        // 📌 Imagen base (la habitación del cliente)
-        image: roomImageUrl,
+async function generateMask(productCutoutUrl) {
+  const productBuffer = await fetch(productCutoutUrl).then(res => res.arrayBuffer());
+  const productImage = Buffer.from(productBuffer);
 
-        /* 
-        📌 Prompt poderoso para forzar que el producto APAREZCA
-        y que respete el entorno real
-        */
-        prompt: `
-        Ultra realistic interior visualization.
-        Insert the product from the reference image naturally in the room.
-        Maintain shadows, scale and lighting of the original environment.
-        Do NOT remove furniture — only add product realistically.
-        No hallucinations — replicate original product textures and color.
-        ` + prompt,
+  // Sharp convierte el producto a grayscale → threshold → transparente donde no hay objeto
+  const maskBuffer = await sharp(productImage)
+    .removeAlpha()
+    .greyscale()
+    .threshold(180)      // ← ajustable, si el producto se pierde bajar a 150
+    .toFormat("png")
+    .toBuffer();
 
-        /*
-        🔥 REFERENCIA VISUAL DEL PRODUCTO — OBLIGATORIA PARA QUE APAREZCA
-        Si esto no estaba antes → por eso no se pegaba el producto.
-        */
-        init_image: productCutoutUrl,   
+  const upload = await cloudinary.uploader.upload_stream({
+    folder: "innotiva/masks",
+    public_id: "mask-" + Date.now(),
+    overwrite: true,
+    resource_type: "image"
+  });
 
-        /*
-        ⚠ IMPORTANTE
-        Usamos la misma imagen como mask solo para indicar espacio editable.
-        */
-        mask: productCutoutUrl,  
-
-        // 🎚 Control Realismo/IA
-        strength: 0.65,              // si el producto no aparece → sube a 0.75
-        guidance_scale: 7,           // realismo + respeto al input
-        num_inference_steps: 45,     // calidad alta
-        seed: Math.floor(Math.random() * 99999999)
-      }
-    };
-
-    // === SEND REQUEST TO REPLICATE ==========================
-    const response = await fetch("https://api.replicate.com/v1/predictions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${REPLICATE_API_TOKEN}`
-      },
-      body: JSON.stringify(body)
-    }).then(r => r.json());
-
-
-    // === VALIDAR PREDICCIÓN ================================
-    if (!response?.id) throw new Error("❌ Replicate no inició predicción");
-
-
-    // === POLLING HASTA QUE TERMINE =========================
-    let result = response;
-    while (result.status !== "succeeded" && result.status !== "failed") {
-      await new Promise(r => setTimeout(r, 2000));
-      result = await fetch(`https://api.replicate.com/v1/predictions/${response.id}`, {
-        headers: { Authorization: `Bearer ${REPLICATE_API_TOKEN}` }
-      }).then(r => r.json());
-    }
-
-    if (result.status === "failed") throw new Error("❌ Failed en IA");
-
-    const finalImage = result.output?.[0];
-    if (!finalImage?.startsWith("http")) throw new Error("Salida inválida");
-
-    console.log("🟢 IA LISTA — Producto insertado:", finalImage);
-    return finalImage;
-
-  } catch (e) {
-    console.error("🔥 ERROR SDXL-INPAINT:", e);
-    throw e;
-  }
+  return new Promise((resolve, reject) => {
+    const stream = cloudinary.uploader.upload_stream(
+      { folder: "innotiva/masks" },
+      (err, result) => err ? reject(err) : resolve(result.secure_url)
+    );
+    stream.end(maskBuffer);
+  });
 }
 
+
+// =========================================
+//  🧠 Modelo SDXL con inserción real del producto
+// =========================================
+
+async function callReplicateAutoMask({ roomImageUrl, productCutoutUrl, analysisText }) {
+
+  console.log("⚙️ Generando máscara automáticamente...");
+
+  const maskUrl = await generateMask(productCutoutUrl);
+  console.log("🟩 MASK LISTA:", maskUrl);
+
+  console.log("🎨 Enviando a SDXL-INPAINT con máscara automática...");
+
+  const predict = await fetch("https://api.replicate.com/v1/predictions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${REPLICATE_API_TOKEN}`
+    },
+    body: JSON.stringify({
+      version: "stability-ai/sdxl-inpainting-1.0",
+      input: {
+        image: roomImageUrl,
+        init_image: productCutoutUrl,   // referencia visual
+        mask: maskUrl,                   // máscara auto generada
+        prompt: `
+          Insert product naturally and realistically.
+          Maintain camera perspective. Keep original lighting.
+          Shadows must match environment.
+          High-end interior visualization. Zero hallucination.
+          Preserve wall texture and materials.
+          IG aesthetic luxury home styling.
+
+          PRODUCT DETAILS:
+          ${analysisText || "Decoración elegante premium."}
+        `,
+        negative_prompt: "blurry, warped, plastic, artifact, deformation, extra limbs, ai-looking",
+        guidance_scale: 9,
+        num_inference_steps: 40,
+        strength: 0.85
+      }
+    })
+  }).then(res => res.json());
+
+  if (!predict.id) throw new Error("❌ No inició predicción");
+
+  let result = predict;
+  while (result.status !== "succeeded" && result.status !== "failed") {
+    await new Promise(r => setTimeout(r, 2000));
+    result = await fetch(`https://api.replicate.com/v1/predictions/${predict.id}`, {
+      headers: { Authorization: `Bearer ${REPLICATE_API_TOKEN}` }
+    }).then(r => r.json());
+  }
+
+  if (result.status === "failed") throw new Error("❌ Falló generación SDXL");
+  return result.output?.[0];
+}
 
 // ================== COPY EMOCIONAL ==================
 
