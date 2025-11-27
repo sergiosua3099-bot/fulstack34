@@ -457,6 +457,23 @@ async function callReplicateInpaint({ roomImageUrl, maskBase64, prompt, productC
         // 📌 MÁSCARA → zona editable, TODO lo demás intocable
         mask: maskBase64,
 
+       // ==================================================================================
+// 🔥 Replicate con 2 fuentes visuales reales
+// ==================================================================================
+async function callReplicateInpaint({ roomImageUrl, maskBase64, prompt, productCutoutUrl }) {
+  try {
+    console.log("[INNOTIVA] Replicate → usando FLUX 1.1 PRO con inpainting injection");
+
+    const body = {
+      input: {
+        prompt,
+
+        // 📌 IMAGEN BASE 1 → habitación real
+        image: roomImageUrl,
+
+        // 📌 MÁSCARA → zona editable, TODO lo demás intocable
+        mask: maskBase64,
+
         /*  
         🔥 IMAGEN BASE 2 → producto real
         ESTE PARÁMETRO es el determinante para que lo copie visualmente.
@@ -528,83 +545,6 @@ async function callReplicateInpaint({ roomImageUrl, maskBase64, prompt, productC
     throw err;
   }
 }
-
-    // 1) Crear la predicción
-    let prediction = await fetch(
-      "https://api.replicate.com/v1/models/black-forest-labs/flux-1.1-pro/predictions",
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${process.env.REPLICATE_API_TOKEN}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify(body)
-      }
-    ).then(r => r.json());
-
-    if (!prediction.id) {
-      console.log("REP ERR =>", prediction);
-      throw new Error("No se pudo crear la predicción en Replicate");
-    }
-
-    // 2) 🔄 Esperar resultado (mantengo tu patrón original)
-    while (prediction.status !== "succeeded" && prediction.status !== "failed") {
-      await new Promise(r => setTimeout(r, 2000));
-      const check = await fetch(
-        `https://api.replicate.com/v1/predictions/${prediction.id}`,
-        {
-          headers: { Authorization: `Bearer ${process.env.REPLICATE_API_TOKEN}` }
-        }
-      );
-      prediction = await check.json();
-    }
-
-    if (prediction.status === "failed") {
-      console.log("REP FAILED =>", prediction);
-      throw new Error("Replicate falló");
-    }
-
-    console.log("[INNOTIVA] IA generada ✔");
-
-    // 3) 🧠 Normalizar la salida para evitar el bug de 'h' y forzar HTTP
-    let finalUrl = null;
-    const out = prediction.output;
-
-    if (typeof out === "string") {
-      finalUrl = out;
-    } else if (Array.isArray(out) && out.length > 0) {
-      finalUrl = out[0];
-    } else if (out && typeof out === "object" && out.image) {
-      finalUrl = out.image;
-    }
-
-    if (!finalUrl && prediction.output_url) {
-      finalUrl = prediction.output_url;
-    }
-
-    // 💥 Forzar que sea una URL HTTP válida
-    if (!finalUrl || typeof finalUrl !== "string" || !finalUrl.startsWith("http")) {
-      console.log("⚠️ Salida inesperada de Replicate:", finalUrl);
-      if (
-        prediction.output_url &&
-        typeof prediction.output_url === "string" &&
-        prediction.output_url.startsWith("http")
-      ) {
-        finalUrl = prediction.output_url;
-      } else {
-        throw new Error("Salida de Replicate inválida, no es una URL HTTP");
-      }
-    }
-
-    console.log("🔵 URL FINAL DE REPLICATE:", finalUrl);
-    return finalUrl;
-
-  } catch (e) {
-    console.error("🔥 ERROR INPAINT REPLICATE", e);
-    throw e;
-  }
-}
-
 
 
 // ================== COPY EMOCIONAL ==================
