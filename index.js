@@ -498,62 +498,44 @@ async function callReplicateInpaint({ roomImageUrl, maskBase64, prompt, productC
 }
 
 
-// =========================================
-//  🧠 Modelo SDXL con inserción real del producto
-// =========================================
+// ===================================================
+// FLUX-FILL-DEV — Inserción real del producto
+// ===================================================
+async function callReplicateInpaint({ roomImageUrl, maskBase64, prompt, productCutoutUrl }) {
 
-async function callReplicateAutoMask({ roomImageUrl, productCutoutUrl, analysisText }) {
-
-  console.log("⚙️ Generando máscara automáticamente...");
-
-  const maskUrl = await generateMask(productCutoutUrl);
-  console.log("🟩 MASK LISTA:", maskUrl);
-
-  console.log("🎨 Enviando a SDXL-INPAINT con máscara automática...");
+  console.log("🧩 Enviando a FLUX-FILL-DEV...");
 
   const predict = await fetch("https://api.replicate.com/v1/predictions", {
     method: "POST",
     headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${REPLICATE_API_TOKEN}`
+      Authorization: `Bearer ${process.env.REPLICATE_API_TOKEN}`,
+      "Content-Type": "application/json"
     },
     body: JSON.stringify({
-      version: "stability-ai/sdxl-inpainting-1.0",
+      version: "black-forest-labs/flux-fill-dev:nbhx3kj26srm80ck9rwbscz1q0", // ← Versión correcta
       input: {
-        image: roomImageUrl,
-        init_image: productCutoutUrl,   // referencia visual
-        mask: maskUrl,                   // máscara auto generada
-        prompt: `
-          Insert product naturally and realistically.
-          Maintain camera perspective. Keep original lighting.
-          Shadows must match environment.
-          High-end interior visualization. Zero hallucination.
-          Preserve wall texture and materials.
-          IG aesthetic luxury home styling.
-
-          PRODUCT DETAILS:
-          ${analysisText || "Decoración elegante premium."}
-        `,
-        negative_prompt: "blurry, warped, plastic, artifact, deformation, extra limbs, ai-looking",
-        guidance_scale: 9,
-        num_inference_steps: 40,
-        strength: 0.85
+        image: roomImageUrl,       // Foto real del cliente
+        mask: maskBase64,          // Zona editable marcada
+        prompt: prompt,            // Prompt creado con embedding e ideas del cliente
+        guidance_scale: 8,         // Ajustable
+        num_inference_steps: 35,   // Más ⇒ más realista
       }
     })
-  }).then(res => res.json());
+  }).then(r => r.json());
 
-  if (!predict.id) throw new Error("❌ No inició predicción");
+  if (!predict.id) throw new Error("❌ Replicate no creó predicción");
 
   let result = predict;
   while (result.status !== "succeeded" && result.status !== "failed") {
     await new Promise(r => setTimeout(r, 2000));
     result = await fetch(`https://api.replicate.com/v1/predictions/${predict.id}`, {
-      headers: { Authorization: `Bearer ${REPLICATE_API_TOKEN}` }
+      headers: { Authorization: `Bearer ${process.env.REPLICATE_API_TOKEN}` }
     }).then(r => r.json());
   }
 
-  if (result.status === "failed") throw new Error("❌ Falló generación SDXL");
-  return result.output?.[0];
+  if (result.status === "failed") throw new Error("❌ Falló flux-fill-dev");
+
+  return result.output?.[0]; // URL final
 }
 
 // =========================================
