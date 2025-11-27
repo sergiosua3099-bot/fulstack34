@@ -441,63 +441,58 @@ async function createMaskFromAnalysis(analysis) {
 }
 
 // ==================================================================================
-// SDXL INPAINT — (Funciona, respeta la habitación, inserta el producto real)
+// SDXL INPAINT — versión confirmada funcional para Replicate
 // ==================================================================================
 async function callReplicateInpaint({ roomImageUrl, maskBase64, prompt, productCutoutUrl }) {
   try {
-    console.log("🔵 [INNOTIVA] Replicate → SDXL Inpainting activo…");
+    console.log("🟦 [INNOTIVA] Enviando a SDXL-INPAINT (versión correcta)");
 
-    const body = {
-      model: "stability-ai/stable-diffusion-xl-inpainting", // << ESTE ES EL CORRECTO
-      input: {
-        image: roomImageUrl,          // base: la habitación real
-        mask: maskBase64,             // máscara blanca donde puede editar
-
-        // referencia del producto a incrustar
-        init_image: productCutoutUrl, // ahora sí lo reconocerá
-        prompt: prompt,
-
-        // anti-destrucción del cuarto
-        negative_prompt: "room changed, new furniture, surreal, dreamlike, ai generated room, blurry, distorted",
-
-        strength: 0.32,               // menor = respeta más la habitación
-        steps: 40,                    // más pasos = integración realista
-        guidance_scale: 7.0,          // equilibrio controlado
-        seed: Math.floor(Math.random() * 999999999)
+    const response = await fetch(
+      "https://api.replicate.com/v1/models/stability-ai/stable-diffusion-xl-inpainting/versions/9d3974f1e23ac67ea0cfbac0acae5e58e44af358b09b01f041d0a26f9b196e4b/predictions", // ← ESTA VEZ ES REAL
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${process.env.REPLICATE_API_TOKEN}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          input: {
+            image: roomImageUrl,         // base real
+            mask: maskBase64,            // zona editable
+            init_image: productCutoutUrl, // producto real
+            prompt,
+            negative_prompt: "room replaced, ai room, surreal, unrealistic composition, blurry, distorted",
+            strength: 0.28,
+            steps: 45,
+            guidance_scale: 7.5
+          }
+        })
       }
-    };
+    );
 
-    // crear predicción
-    let prediction = await fetch("https://api.replicate.com/v1/predictions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${process.env.REPLICATE_API_TOKEN}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify(body)
-    }).then(r => r.json());
+    let prediction = await response.json();
+    if (!prediction.id) throw new Error("❌ Prediction no creada (modelo o body incorrecto)");
 
-    if (!prediction.id) throw new Error("❌ No se creó la predicción — modelo o parámetros inválidos");
-
-    // poll hasta finalizar
+    // Poll state (igual que tu lógica original)
     while (prediction.status !== "succeeded" && prediction.status !== "failed") {
-      await new Promise(res => setTimeout(res, 2000));
+      await new Promise(r => setTimeout(r, 2000));
       prediction = await fetch(
         `https://api.replicate.com/v1/predictions/${prediction.id}`,
-        { headers: { Authorization: `Bearer ${process.env.REPLICATE_API_TOKEN}` } }
+        { headers: { Authorization: `Bearer ${process.env.REPLICATE_API_TOKEN}` }}
       ).then(r => r.json());
     }
 
-    if (prediction.status === "failed") throw new Error("SDXL falló generando imagen");
+    if (prediction.status === "failed") throw new Error("❌ SDXL falló generando imagen");
 
-    console.log("🟢 Imagen generada con éxito");
-    return prediction.output?.[0] || prediction.output_url;
+    console.log("🔥 SALIDA →", prediction.output?.[0]);
+    return prediction.output?.[0];
 
   } catch (err) {
-    console.error("🔥 ERROR SDXL:", err);
+    console.error("🔥 ERROR SDXL-INPAINT", err);
     throw err;
   }
 }
+
 
 
 // ================== COPY EMOCIONAL ==================
