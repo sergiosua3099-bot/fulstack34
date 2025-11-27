@@ -608,122 +608,128 @@ app.post(
         ideaText: idea
       });
 
-      // 6) Ajustar placement según tipo de producto + idea
-      const refinedPlacement = determineMaskPosition(
-        analysis,
-        productData.productType,
-        idea
-      );
-      analysis.finalPlacement = refinedPlacement;
+     // ====================== ENDPOINT PRINCIPAL ====================== //
 
-    // ===================== 7) FLUX-FILL-DEV — IMPLEMENTACIÓN REAL ===================== //
+app.post("/experiencia-premium", upload.single("roomImage"), async (req, res) => {
+  const startedAt = Date.now();
 
-let generatedImageUrlFromReplicate;
+  try {
+    logStep("Nueva experiencia-premium recibida");
 
-try {
-  logStep("🧩 Enviando máscara + imagen a flux-fill-dev...");
+    const file = req.file;
+    const { productId, productName, productUrl, idea } = req.body;
 
-  const output = await replicate.run(
-    "black-forest-labs/flux-fill-dev",
-    {
-      input: {
-        image: userImageUrl,                           // url cloudinary de la foto original
-        mask: `data:image/png;base64,${maskBase64}`,    // máscara generada por el paso 6
-        prompt: prompt,                                 // prompt ultra realista
-        guidance: 6,
-        num_inference_steps: 32,
-        output_format: "webp",
-        output_quality: 95,
-        megapixels: "1"                                 // estable para móvil + pc
+    if (!file) return res.status(400).json({ status:"error", message:"Falta roomImage" });
+    if (!productId) return res.status(400).json({ status:"error", message:"Falta productId" });
+
+    // 1) subir imagen cliente
+    const uploadRoom = await uploadBufferToCloudinary(file.buffer,"innotiva/rooms","room");
+    const userImageUrl = uploadRoom.secure_url;
+    const roomPublicId = uploadRoom.public_id;
+    logStep("Imagen subida",{roomImageUrl:userImageUrl});
+
+    // 2) Obtener producto desde Shopify
+    const productData = await fetchProductFromShopify(productId);
+    const effectiveProductName = productName || productData.title;
+
+    // 3) Recorte PRO
+    let productCutoutUrl = productData.featuredImage;
+    try {
+      if(productData.featuredImage){
+        const cut = await createProductCutout(productData.featuredImage);
+        productCutoutUrl = cut.productCutoutUrl;
       }
-    }
-  );
+    } catch(e){ console.log("Recorte falló, usando original"); }
 
-  // 🚨 OJO — aquí está el secreto!
-  // output NO es un string → es un objeto con métodos embed(), url()
-  generatedImageUrlFromReplicate = output?.[0]?.url();
+    // 4) Embedding visual (si falla no bloquea)
+    let productEmbedding=null;
+    try { productEmbedding = await buildProductEmbedding(productData,productCutoutUrl); } catch{}
 
-  if (!generatedImageUrlFromReplicate) {
-    console.log("RAW OUTPUT:", output);
-    throw new Error("Flux-fill-dev no devolvió imagen utilizable");
+    // 5) Análisis habitación
+    const analysis = await analyzeRoom({roomImageUrl:userImageUrl,ideaText:idea});
+
+    // 6) Determinar área de inserción IA
+    analysis.finalPlacement = determineMaskPosition(analysis,productData.productType,idea);
+    const maskBase64 = await createMaskFromAnalysis(analysis);
+
+    // ====================== 7) IA FLUX-FILL-DEV ====================== //
+
+    const visualHints = productEmbedding ? `
+      Colores detectados: ${(productEmbedding.colors||[]).join(",")}
+      Materiales: ${(productEmbedding.materials||[]).join(",")}
+      Textura: ${productEmbedding.texture||"-"}
+      Patrón: ${productEmbedding.pattern||"-"}` : "";
+
+    const prompt = `
+      Inserta **${effectiveProductName}** respetando iluminación real,
+      sombras naturales, profundidad y textura original del cuarto.
+      Nada fuera de la máscara debe modificarse.
+      Estilo detectado: ${analysis.roomStyle}
+      ${visualHints}
+    `;
+
+    logStep("🧩 Enviando imagen → flux-fill-dev");
+
+    const fluxReq = await fetch("https://api.replicate.com/v1/models/black-forest-labs/flux-fill-dev/predictions",{
+      method:"POST",
+      headers:{
+        "Authorization":`Bearer ${REPLICATE_API_TOKEN}`,
+        "Content-Type":"application/json"
+      },
+      body:JSON.stringify({
+        input:{
+          image:userImageUrl,
+          mask:`data:image/png;base64,${maskBase64}`,
+          prompt,
+          guidance:6,
+          num_inference_steps:32,
+          output_format:"webp",
+          output_quality:95,
+          megapixels:"match_input"
+        }
+      })
+    });
+
+    const flux = await fluxReq.json();
+    const generatedImage = flux?.output?.[0];
+    if(!generatedImage) throw new Error("Flux no devolvió imagen");
+
+    logStep("🟢 IA LISTA",{url:generatedImage});
+
+    // 8) Subir imagen final a cloudinary
+    const up = await uploadUrlToCloudinary(generatedImage,"innotiva/generated","generated");
+    const generatedImageUrl = up.secure_url;
+
+    const thumbnails = {
+      before: buildThumbnails(roomPublicId),
+      after: buildThumbnails(up.public_id)
+    };
+
+    // 9) Copy humanizado
+    const message = buildEmotionalCopy({
+      roomStyle:analysis.roomStyle,
+      productName:effectiveProductName,
+      idea
+    });
+
+    // 10) Respuesta final
+    return res.json({
+      ok:true,
+      room_image:userImageUrl,
+      ai_image:generatedImageUrl,
+      product_name:effectiveProductName,
+      product_url:productUrl||null,
+      message,
+      thumbnails,
+      analysis,
+      embedding:productEmbedding||null
+    });
+
+  } catch(err){
+    console.error(err);
+    return res.status(500).json({status:"error",message:"falló generación IA"});
   }
-
-  console.log("🟢 IA LISTA =>", generatedImageUrlFromReplicate);
-
-} catch (error) {
-  console.error("🚨 Error en flux-fill-dev:", error);
-  return res.status(500).json({ status:"error", message:"Fallo en generación AI" });
-}
-
-
-// ============================ 8) PROMPT REALISTA ============================ //
-
-const visualHints = productEmbedding
-  ? `
-Colores del producto: ${(productEmbedding.colors || []).join(", ")}
-Materiales: ${(productEmbedding.materials || []).join(", ")}
-Textura: ${productEmbedding.texture || "no detectada"}
-Patrón: ${productEmbedding.pattern || "no detectado"}
-` : "";
-
-const prompt = `
-INPAINTING REALISTA HD — inserta el producto en el espacio manteniendo iluminación real.
-
-Producto a insertar: ${effectiveProductName}
-Referencia: ${productCutoutUrl}
-
-Reglas:
-- Mantener sombras, escala y luz original.
-- NO modificar zonas fuera de la máscara.
-- Debe sentirse fotografía real.
-
-Estilo del espacio detectado: ${analysis.roomStyle}
-${visualHints}
-`;
-
-
-// ===================== 9) FLUX-FILL-DEV — INPAINTING HD ===================== //
-
-let generatedImageUrlFromReplicate;
-
-try {
-
-  logStep("🧩 Generando integración fotográfica HD+ con flux-fill-dev...");
-
-  const flux = await fetch("https://api.replicate.com/v1/models/black-forest-labs/flux-fill-dev/predictions", {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${REPLICATE_API_TOKEN}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      input: {
-        image: userImageUrl,
-        mask: `data:image/png;base64,${maskBase64}`,   // ← FIX CRÍTICO
-        prompt: prompt,
-        guidance: 6,
-        num_inference_steps: 34,
-        output_format: "webp",
-        output_quality: 99,
-        megapixels: "match_input"
-      }
-    })
-  });
-
-  const result = await flux.json();
-  generatedImageUrlFromReplicate = result?.output?.[0];
-
-  if (!generatedImageUrlFromReplicate) throw new Error("Flux-fill-dev no devolvió imagen");
-
-  console.log("🟢 Resultado FLUX:", generatedImageUrlFromReplicate);
-
-} catch (error) {
-  console.error("🚨 Error con flux-fill-dev:", error);
-  return res.status(500).json({
-    status: "error",
-    message: "Fallo generación AI con flux-fill-dev"
-  });
-}
+});
 
 
 // ======================= 10) SUBIR RESULTADO A CLOUDINARY ==================== //
