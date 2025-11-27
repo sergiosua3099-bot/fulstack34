@@ -459,7 +459,6 @@ async function callReplicateInpaint({
 
   const maskDataUrl = `data:image/png;base64,${maskBase64}`;
 
-  // Según doc que pegaste: se usa /v1/models/{model}/predictions + input
   const createRes = await fetch(
     `https://api.replicate.com/v1/models/${encodeURIComponent(
       REPLICATE_MODEL_SLUG
@@ -481,7 +480,6 @@ async function callReplicateInpaint({
           output_quality: 80,
           num_inference_steps: 28,
           megapixels: "match_input"
-          // seed: 42 // si quieres runs repetibles, lo activas
         }
       })
     }
@@ -618,185 +616,109 @@ app.post(
       );
       analysis.finalPlacement = refinedPlacement;
 
-  // ================== 7) FLUX-FILL-DEV — INPAINTING REAL ===================== //
+      // 7) Crear máscara B/N basada en análisis + placement
+      const maskBase64 = await createMaskFromAnalysis(analysis);
 
-let generatedImageUrlFromReplicate;
-
-try {
-  logStep("🧩 Enviando a FLUX-FILL-DEV con máscara INPAINT...");
-
-  const fluxResponse = await replicate.run(
-    "black-forest-labs/flux-fill-dev",     // << ESTE ES EL MODELO CORRECTO Y FUNCIONAL
-    {
-      input: {
-        image: userImageUrl,               // Imagen original del cuarto
-        mask: productMask,                 // Nuestra máscara BN generada
-        prompt: prompt,                    // Prompt ultra-realista ya generado
-        guidance: 7,                       // menor = más fiel a la foto, más realismo
-        num_inference_steps: 22,           // más rápido + mantiene calidad
-        output_format: "webp",
-        output_quality: 90,
-        megapixels: "1"                    // match_input si quieres más resolución
-      }
-    }
-  );
-
-  generatedImageUrlFromReplicate = fluxResponse?.output?.[0];
-
-  if (!generatedImageUrlFromReplicate)
-    throw new Error("Flux-fill-dev no devolvió imagen (output vacío).");
-
-  console.log("🟢 Resultado final IA:", generatedImageUrlFromReplicate);
-
-} catch (error) {
-  console.error("🚨 Error desde flux-fill-dev:", error);
-  return res.status(500).json({ status:"error", message:"Fallo generación IA con flux-fill-dev" });
-}
-
-
-
-// ================== 8) PROMPT ULTRA REALISTA (antes del INPAINT) ===================== //
-
-const visualHints = productEmbedding
-  ? `
+      // 8) PROMPT ULTRA REALISTA (usa embedding + análisis)
+      const visualHints = productEmbedding
+        ? `
 Colores detectados en el producto: ${(productEmbedding.colors || []).join(", ")}
 Materiales: ${(productEmbedding.materials || []).join(", ")}
 Textura: ${productEmbedding.texture || "no detectada"}
 Patrón/detalles: ${productEmbedding.pattern || "no detectado"}
 `
-  : "";
+        : "";
 
-const prompt = `
+      const prompt = `
 INSTRUCCIÓN GENERAL:
-Integra el producto REAL dentro del área enmascarada sin alterar el resto.
-Debe verse como fotografía real.
+Integra el producto REAL dentro del área de la máscara blanca sin alterar el resto del espacio.
+La imagen generada debe parecer una fotografía real, no un render.
 
 PRODUCTO A INSERTAR:
 ${effectiveProductName}
-Referencia visual: ${productCutoutUrl}
+Referencia visual real del producto: ${productCutoutUrl}
 
 REGLAS:
-- Mantener luz, sombras, textura y escala realista.
-- Nada fuera de la máscara debe cambiar.
-- No añadir objetos, textos o efectos irreales.
-- Debe sentirse tomada por cámara real.
+- Mantén iluminación, sombras, textura y escala coherentes con la habitación.
+- Nada fuera de la zona enmascarada debe cambiar.
+- No agregues textos, logos ni objetos ajenos a la escena.
+- Evita efectos irreales; la foto debe parecer tomada con cámara.
 
 Estilo detectado del espacio: ${analysis.roomStyle}
 ${visualHints}
 
 OBJETIVO:
-Unificar producto + habitación como si siempre hubiera estado ahí.
+Unificar producto + habitación para que el resultado se sienta natural, como si el producto siempre hubiera estado ahí.
 `;
 
+      // 9) Llamar a FLUX-FILL-DEV vía Replicate con máscara inteligente
+      const generatedImageUrlFromReplicate = await callReplicateInpaint({
+        roomImageUrl: userImageUrl,
+        maskBase64,
+        prompt,
+        productCutoutUrl
+      });
 
-// ================== 7.2 IA REPLICATE — Inpainting Real ===================== //
+      // 10) Subir resultado a Cloudinary
+      console.log("🔥 URL RAW desde Replicate =>", generatedImageUrlFromReplicate);
 
-let generatedImageUrlFromReplicate;
+      const uploadGenerated = await uploadUrlToCloudinary(
+        generatedImageUrlFromReplicate,
+        "innotiva/generated",
+        "room-generated"
+      );
 
-try {
-  logStep("🧩 Enviando a FLUX-FILL-DEV con máscara INPAINT...");
+      const generatedImageUrl = uploadGenerated.secure_url;
+      const generatedPublicId = uploadGenerated.public_id;
 
-  const fluxResponse = await replicate.run(
-    "black-forest-labs/flux-1-inpaint",
-    {
-      input: {
-        image: userImageUrl,    // imagen original correcta
-        mask: productMask,      // máscara generada dinámicamente
-        prompt: prompt,         // prompt realista aplicado
-        guidance: 18,
-        num_inference_steps: 28,
-        num_outputs: 1,
-        output_quality: 85,
-        output_format: "webp",
-        megapixels: "match_input"
+      const thumbnails = {
+        before: buildThumbnails(roomPublicId),
+        after: buildThumbnails(generatedPublicId)
+      };
+
+      if (!userImageUrl || !generatedImageUrl) {
+        throw new Error("Imágenes incompletas (antes/después).");
       }
+
+      // 11) Copy emocional
+      const message = buildEmotionalCopy({
+        roomStyle: analysis.roomStyle,
+        productName: effectiveProductName,
+        idea
+      });
+
+      // 12) sessionId
+      const sessionId = crypto.randomUUID();
+
+      logStep("EXPERIENCIA GENERADA OK", {
+        elapsedMs: Date.now() - startedAt
+      });
+
+      // ====================== RESPUESTA FINAL BACKEND 🔥 ======================
+      return res.status(200).json({
+        ok: true,
+        status: "complete",
+        session: sessionId,
+        room_image: userImageUrl,
+        ai_image: generatedImageUrl,
+        product_url: productUrl || null,
+        product_name: effectiveProductName,
+        message,
+        analysis,
+        thumbnails,
+        embedding: productEmbedding || null,
+        created_at: new Date().toISOString()
+      });
+    } catch (err) {
+      console.error("Error en /experiencia-premium:", err);
+      return res.status(500).json({
+        status: "error",
+        message:
+          "Tuvimos un problema al generar tu propuesta. Intenta otra vez."
+      });
     }
-  );
-
-  generatedImageUrlFromReplicate = fluxResponse?.output?.[0];
-
-  if (!generatedImageUrlFromReplicate)
-    throw new Error("⚠ Flux no generó imagen");
-
-  console.log("🟢 Resultado final IA:", generatedImageUrlFromReplicate);
-
-} catch (error) {
-  console.error("🚨 Error FLUX:", error);
-  return res.status(500).json({ status:"error", message:"Fallo generación IA" });
-}
-
-
-// ================== 9) SUBIR RESULTADO A CLOUDINARY ===================== //
-
-console.log("🔥 RAW Replicate =>", generatedImageUrlFromReplicate);
-
-const uploadGenerated = await uploadUrlToCloudinary(
-  generatedImageUrlFromReplicate,
-  "innotiva/generated",
-  "room-generated"
+  }
 );
-
-const generatedImageUrl = uploadGenerated.secure_url;
-const generatedPublicId = uploadGenerated.public_id;
-
-const thumbnails = {
-  before: buildThumbnails(roomPublicId),
-  after: buildThumbnails(generatedPublicId)
-};
-
-if (!userImageUrl || !generatedImageUrl)
-  throw new Error("Imágenes incompletas (antes/después).");
-
-
-// ================== 10) COPY EMOCIONAL ===================== //
-
-const message = buildEmotionalCopy({
-  roomStyle: analysis.roomStyle,
-  productName: effectiveProductName,
-  idea
-});
-
-
-// ================== 11) SESSION ===================== //
-
-const sessionId = crypto.randomUUID();
-
-logStep("EXPERIENCIA GENERADA OK", {
-  elapsedMs: Date.now() - startedAt
-});
-
-
-// ====================== 12) RESPUESTA FINAL BACKEND 🔥 ====================== //
-
-return res.status(200).json({
-  ok: true,
-  status: "complete",
-  session: sessionId,
-
-  room_image: userImageUrl,
-  ai_image: generatedImageUrl,
-
-  product_url: productUrl || null,
-  product_name: effectiveProductName,
-  message,
-  analysis,
-  thumbnails,
-  embedding: productEmbedding || null,
-
-  created_at: new Date().toISOString()
-});
-
-
-} catch (err) {
-  console.error("Error en /experiencia-premium:", err);
-  return res.status(500).json({
-    status: "error",
-    message:
-      "Tuvimos un problema al generar tu propuesta. Intenta otra vez."
-  });
-}
-});
-
 
 // ================== ARRANQUE SERVIDOR ==================
 
