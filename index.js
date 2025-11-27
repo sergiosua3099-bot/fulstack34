@@ -441,52 +441,111 @@ async function createMaskFromAnalysis(analysis) {
 }
 
 // ==================================================================================
-// SDXL INPAINT — versión confirmada funcional para Replicate
+// 🔥 Replicate – SDXL INPAINT PRO (usa la foto real del cliente + máscara)
 // ==================================================================================
 async function callReplicateInpaint({ roomImageUrl, maskBase64, prompt, productCutoutUrl }) {
   try {
     console.log("🟦 [INNOTIVA] Enviando a SDXL-INPAINT (versión correcta)");
 
-    const response = await fetch(
-      "https://api.replicate.com/v1/models/stability-ai/stable-diffusion-xl-inpainting/versions/9d3974f1e23ac67ea0cfbac0acae5e58e44af358b09b01f041d0a26f9b196e4b/predictions", // ← ESTA VEZ ES REAL
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${process.env.REPLICATE_API_TOKEN}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          input: {
-            image: roomImageUrl,         // base real
-            mask: maskBase64,            // zona editable
-            init_image: productCutoutUrl, // producto real
-            prompt,
-            negative_prompt: "room replaced, ai room, surreal, unrealistic composition, blurry, distorted",
-            strength: 0.28,
-            steps: 45,
-            guidance_scale: 7.5
-          }
-        })
-      }
-    );
-
-    let prediction = await response.json();
-    if (!prediction.id) throw new Error("❌ Prediction no creada (modelo o body incorrecto)");
-
-    // Poll state (igual que tu lógica original)
-    while (prediction.status !== "succeeded" && prediction.status !== "failed") {
-      await new Promise(r => setTimeout(r, 2000));
-      prediction = await fetch(
-        `https://api.replicate.com/v1/predictions/${prediction.id}`,
-        { headers: { Authorization: `Bearer ${process.env.REPLICATE_API_TOKEN}` }}
-      ).then(r => r.json());
+    // ⚠️ Asegúrate en .env:
+    // REPLICATE_API_TOKEN=tu_token
+    // REPLICATE_MODEL_VERSION=ID de versión de sdxl (por ej: 2b017d9b67ed...)
+    if (!REPLICATE_API_TOKEN) {
+      throw new Error("No hay REPLICATE_API_TOKEN en las env vars");
+    }
+    if (!REPLICATE_MODEL_VERSION) {
+      throw new Error("No hay REPLICATE_MODEL_VERSION en las env vars");
     }
 
-    if (prediction.status === "failed") throw new Error("❌ SDXL falló generando imagen");
+    // SDXL espera:
+    // POST https://api.replicate.com/v1/predictions
+    // { version: "...", input: { prompt, image, mask, ... } }
+    const body = {
+      version: REPLICATE_MODEL_VERSION,
+      input: {
+        // Prompt ya viene súper guiado desde tu backend
+        prompt,
 
-    console.log("🔥 SALIDA →", prediction.output?.[0]);
-    return prediction.output?.[0];
+        // 📌 IMAGEN BASE: la foto REAL del cliente (Cloudinary https)
+        image: roomImageUrl,
 
+        // 📌 MÁSCARA: data URL PNG en base64
+        //   Negro = se preserva
+        //   Blanco = se repinta (ahí insertamos el producto)
+        mask: `data:image/png;base64,${maskBase64}`,
+
+        // Resolución alta pero manejable
+        width: 1024,
+        height: 1024,
+
+        // Inpainting controlado (menos destrucción del cuarto)
+        num_inference_steps: 40,
+        guidance_scale: 6.0,    // menor que 7.5 por defecto para respetar más la foto
+        prompt_strength: 0.55,  // < 0.8 para no destruir tanto la imagen base
+
+        // Opcional: puedes tunear negativo para bajar arte raro
+        negative_prompt:
+          "blurry, low quality, cartoon, 3d render, text, logo, watermark, different room, different architecture, distorted, extra furniture, duplicated objects"
+      }
+    };
+
+    const predictionInit = await fetch("https://api.replicate.com/v1/predictions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${REPLICATE_API_TOKEN}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(body)
+    }).then((r) => r.json());
+
+    // Si hay error directo en el POST, lo mostramos
+    if (!predictionInit || predictionInit.detail || predictionInit.error) {
+      console.log("❌ Response inesperada al crear prediction:", predictionInit);
+      throw new Error("❌ Prediction no creada (modelo o body incorrecto)");
+    }
+
+    if (!predictionInit.id) {
+      console.log("❌ Prediction sin id:", predictionInit);
+      throw new Error("❌ Prediction no creada (modelo o body incorrecto)");
+    }
+
+    let prediction = predictionInit;
+
+    // 🔄 Polling hasta que termine
+    while (prediction.status !== "succeeded" && prediction.status !== "failed" && prediction.status !== "canceled") {
+      await new Promise((r) => setTimeout(r, 2000));
+      prediction = await fetch(
+        `https://api.replicate.com/v1/predictions/${prediction.id}`,
+        {
+          headers: {
+            Authorization: `Bearer ${REPLICATE_API_TOKEN}`
+          }
+        }
+      ).then((r) => r.json());
+    }
+
+    if (prediction.status !== "succeeded") {
+      console.log("❌ SDXL-INPAINT no terminó bien:", prediction);
+      throw new Error(`❌ SDXL-INPAINT falló con status: ${prediction.status}`);
+    }
+
+    // Output schema de sdxl = array de URLs
+    const out = prediction.output;
+    let finalUrl = null;
+
+    if (Array.isArray(out) && out.length > 0 && typeof out[0] === "string") {
+      finalUrl = out[0];
+    } else if (typeof out === "string") {
+      finalUrl = out;
+    }
+
+    if (!finalUrl || !finalUrl.startsWith("http")) {
+      console.log("⚠️ Salida SDXL inesperada:", prediction);
+      throw new Error("Salida SDXL inválida, no es URL http");
+    }
+
+    console.log("🔵 URL FINAL SDXL-INPAINT:", finalUrl);
+    return finalUrl;
   } catch (err) {
     console.error("🔥 ERROR SDXL-INPAINT", err);
     throw err;
