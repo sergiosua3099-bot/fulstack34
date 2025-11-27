@@ -440,25 +440,25 @@ async function createMaskFromAnalysis(analysis) {
   return pngBuffer.toString("base64");
 }
 // ==================================================================================
-// 🔥 Replicate — FLUX INPAINT + REFERENCIA REAL DEL PRODUCTO
+// 🔥 Replicate — FLUX 1.1 INPAINTING + REFERENCIA REAL DEL PRODUCTO
 // ==================================================================================
 async function callReplicateInpaint({ roomImageUrl, maskBase64, productCutoutUrl, prompt }) {
   try {
-    console.log("🚀 Enviando a Replicate — FLUX INPAINT + REFERENCIA REAL");
+    console.log("🚀 Enviando a Replicate — FLUX 1.1 INPAINTING + REFERENCIA REAL");
 
     const body = {
       input: {
         prompt,
 
-        // 📌 Imagen real del cliente
+        // 🏠 Imagen real del cliente
         init_image: roomImageUrl,
         mask: maskBase64,
 
-        // 📌 Producto real como referencia de estilo (clave del realismo)
+        // 🖼 Producto real como referencia para copiar textura
         reference_image: productCutoutUrl,
-        reference_strength: 0.85,
+        reference_strength: 0.88,
 
-        // Mantener el ambiente original
+        // Mantener la escena real
         preserve_init_image: true,
         strength: 0.22,
         guidance_scale: 3.0,
@@ -466,12 +466,13 @@ async function callReplicateInpaint({ roomImageUrl, maskBase64, productCutoutUrl
         width: 1024,
         height: 1024,
         num_inference_steps: 55,
-        seed: Math.floor(Math.random() * 1000000000)
+        seed: Math.floor(Math.random() * 99999999)
       }
     };
 
+    // 🧠 Crear predicción
     let prediction = await fetch(
-      "https://api.replicate.com/v1/models/black-forest-labs/flux-1.1-pro-inpainting/predictions",
+      "https://api.replicate.com/v1/models/black-forest-labs/flux-1.1-inpainting/predictions",
       {
         method: "POST",
         headers: {
@@ -482,32 +483,31 @@ async function callReplicateInpaint({ roomImageUrl, maskBase64, productCutoutUrl
       }
     ).then(r => r.json());
 
-    // Validación si el server rechazó request
     if (!prediction.id) {
       console.log("❌ Response inesperada:", prediction);
-      throw new Error("Replicate no creó predicción — modelo/inputs inválidos");
+      throw new Error("Replicate no creó predicción — inputs inválidos");
     }
 
-    // Polling hasta terminar
-    while (!["succeeded", "failed"].includes(prediction.status)) {
-      await new Promise(r => setTimeout(r, 2000));
+    // 🔄 Esperar hasta que termine
+    while (!["succeeded","failed"].includes(prediction.status)) {
+      await new Promise(r => setTimeout(r,2000));
       prediction = await fetch(
         `https://api.replicate.com/v1/predictions/${prediction.id}`,
-        { headers: { Authorization: `Bearer ${process.env.REPLICATE_API_TOKEN}` } }
-      ).then(r => r.json());
+        { headers: { Authorization: `Bearer ${process.env.REPLICATE_API_TOKEN}` }}
+      ).then(r=>r.json());
     }
 
-    if (prediction.status === "failed")
-      throw new Error("Replicate falló generando imagen");
+    if (prediction.status==="failed") throw new Error("Replicate falló generando imagen");
 
-    // Normalización de output
+    // 🟢 URL final limpia
     return Array.isArray(prediction.output) ? prediction.output[0] : prediction.output;
 
-  } catch (err) {
-    console.error("🔥 ERROR callReplicateInpaint:", err);
+  } catch(err){
+    console.error("🔥 ERROR callReplicateInpaint:",err);
     throw err;
   }
 }
+
 
 
 // ================== COPY EMOCIONAL ==================
