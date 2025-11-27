@@ -616,112 +616,152 @@ app.post(
       );
       analysis.finalPlacement = refinedPlacement;
 
-      // 7) Crear máscara B/N basada en análisis + placement
-      const maskBase64 = await createMaskFromAnalysis(analysis);
+     // ================== 7) CREAR MÁSCARA A PARTIR DEL ANÁLISIS ================== //
 
-      // 8) PROMPT ULTRA REALISTA (usa embedding + análisis)
-      const visualHints = productEmbedding
-        ? `
-Colores detectados en el producto: ${(productEmbedding.colors || []).join(", ")}
+const maskBase64 = await createMaskFromAnalysis(analysis);  // 🔥 máscara real de ubicación
+logStep("Máscara generada correctamente");
+
+
+// ================== 8) PROMPT ULTRA REALISTA — MODO C (PRO HD+) ================== //
+
+const visualHints = productEmbedding
+  ? `
+Colores: ${(productEmbedding.colors || []).join(", ")}
 Materiales: ${(productEmbedding.materials || []).join(", ")}
 Textura: ${productEmbedding.texture || "no detectada"}
-Patrón/detalles: ${productEmbedding.pattern || "no detectado"}
+Detalles/Patrón: ${productEmbedding.pattern || "no detectado"}
 `
-        : "";
+  : "";
 
-      const prompt = `
-INSTRUCCIÓN GENERAL:
-Integra el producto REAL dentro del área de la máscara blanca sin alterar el resto del espacio.
-La imagen generada debe parecer una fotografía real, no un render.
+const prompt = `
+INSTRUCCIÓN PRINCIPAL:
+Inserta el producto REAL dentro del área marcada por la máscara blanco/negro.
+Debe verse 100% fotográfico — no generado por IA.
 
-PRODUCTO A INSERTAR:
+PRODUCTO:
 ${effectiveProductName}
-Referencia visual real del producto: ${productCutoutUrl}
+Referencia real del producto: ${productCutoutUrl}
 
-REGLAS:
-- Mantén iluminación, sombras, textura y escala coherentes con la habitación.
-- Nada fuera de la zona enmascarada debe cambiar.
-- No agregues textos, logos ni objetos ajenos a la escena.
-- Evita efectos irreales; la foto debe parecer tomada con cámara.
+REGLAS ESTRICTAS:
+- Mantener escala, sombras, contraste y iluminación original.
+- Nada fuera de la máscara debe ser modificado.
+- No añadir texto, logos ni elementos nuevos.
+- El resultado debe lucir como una foto tomada en cámara real.
 
-Estilo detectado del espacio: ${analysis.roomStyle}
+Detalles del espacio detectado: ${analysis.roomStyle}
 ${visualHints}
 
 OBJETIVO:
-Unificar producto + habitación para que el resultado se sienta natural, como si el producto siempre hubiera estado ahí.
+Que el producto parezca que SIEMPRE estuvo ahí.
 `;
 
-      // 9) Llamar a FLUX-FILL-DEV vía Replicate con máscara inteligente
-      const generatedImageUrlFromReplicate = await callReplicateInpaint({
-        roomImageUrl: userImageUrl,
-        maskBase64,
-        prompt,
-        productCutoutUrl
-      });
 
-      // 10) Subir resultado a Cloudinary
-      console.log("🔥 URL RAW desde Replicate =>", generatedImageUrlFromReplicate);
+// ============== 9) IA — FLUX-FILL-DEV (MODO PRO CINEMATIC HD+) ============== //
 
-      const uploadGenerated = await uploadUrlToCloudinary(
-        generatedImageUrlFromReplicate,
-        "innotiva/generated",
-        "room-generated"
-      );
+let generatedImageUrlFromReplicate;
 
-      const generatedImageUrl = uploadGenerated.secure_url;
-      const generatedPublicId = uploadGenerated.public_id;
+try {
+  logStep("🧩 Generando integración fotográfica HD+ con flux-fill-dev...");
 
-      const thumbnails = {
-        before: buildThumbnails(roomPublicId),
-        after: buildThumbnails(generatedPublicId)
-      };
-
-      if (!userImageUrl || !generatedImageUrl) {
-        throw new Error("Imágenes incompletas (antes/después).");
+  const flux = await fetch(`https://api.replicate.com/v1/models/black-forest-labs/flux-fill-dev/predictions`, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${REPLICATE_API_TOKEN}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      input: {
+        image: userImageUrl,
+        mask: `data:image/png;base64,${maskBase64}`,
+        prompt: prompt,
+        guidance: 6,              // ← mejor preservación fotográfica
+        num_inference_steps: 34,  // ← cinematic + textura más real
+        output_format: "webp",
+        output_quality: 99,       // máxima calidad casi sin pérdida
+        megapixels: "match_input" // respeta resolución original (ideal mobile/desktop)
       }
+    })
+  });
 
-      // 11) Copy emocional
-      const message = buildEmotionalCopy({
-        roomStyle: analysis.roomStyle,
-        productName: effectiveProductName,
-        idea
-      });
+  const fluxResponse = await flux.json();
+  generatedImageUrlFromReplicate = fluxResponse?.output?.[0];
 
-      // 12) sessionId
-      const sessionId = crypto.randomUUID();
+  if (!generatedImageUrlFromReplicate) throw new Error("Flux-fill-dev no devolvió imagen");
 
-      logStep("EXPERIENCIA GENERADA OK", {
-        elapsedMs: Date.now() - startedAt
-      });
+  console.log("🟢 RESULTADO FINAL HD+: ", generatedImageUrlFromReplicate);
 
-      // ====================== RESPUESTA FINAL BACKEND 🔥 ======================
-      return res.status(200).json({
-        ok: true,
-        status: "complete",
-        session: sessionId,
-        room_image: userImageUrl,
-        ai_image: generatedImageUrl,
-        product_url: productUrl || null,
-        product_name: effectiveProductName,
-        message,
-        analysis,
-        thumbnails,
-        embedding: productEmbedding || null,
-        created_at: new Date().toISOString()
-      });
-    } catch (err) {
-      console.error("Error en /experiencia-premium:", err);
-      return res.status(500).json({
-        status: "error",
-        message:
-          "Tuvimos un problema al generar tu propuesta. Intenta otra vez."
-      });
-    }
-  }
+} catch (error) {
+  console.error("🚨 Error con flux-fill-dev:", error);
+  return res.status(500).json({ status:"error", message:"Fallo generación IA HD+" });
+}
+
+
+// ================== 10) SUBIR EL RESULTADO A CLOUDINARY ================== //
+
+console.log("🔥 RAW IA =>", generatedImageUrlFromReplicate);
+
+const uploadGenerated = await uploadUrlToCloudinary(
+  generatedImageUrlFromReplicate,
+  "innotiva/generated",
+  "room-generated"
 );
 
-// ================== ARRANQUE SERVIDOR ==================
+const generatedImageUrl = uploadGenerated.secure_url;
+const generatedPublicId = uploadGenerated.public_id;
+
+const thumbnails = {
+  before: buildThumbnails(roomPublicId),
+  after: buildThumbnails(generatedPublicId)
+};
+
+if (!userImageUrl || !generatedImageUrl)
+  throw new Error("Faltan imágenes para entregar resultado al usuario.");
+
+
+// ================== 11) COPY EMOCIONAL PARA LA WEB ================== //
+
+const message = buildEmotionalCopy({
+  roomStyle: analysis.roomStyle,
+  productName: effectiveProductName,
+  idea
+});
+
+
+// ================== 12) RESPUESTA FINAL AL FRONTEND ================== //
+
+const sessionId = crypto.randomUUID();
+logStep("EXPERIENCIA GENERADA OK", { elapsedMs: Date.now() - startedAt });
+
+return res.status(200).json({
+  ok: true,
+  status: "complete",
+  sessionId,
+  room_image: userImageUrl,
+  ai_image: generatedImageUrl,
+  product_url: productUrl || null,
+  product_name: effectiveProductName,
+  message,
+  analysis,
+  thumbnails,
+  embedding: productEmbedding || null,
+  created_at: new Date().toISOString()
+});
+
+
+// ================== CATCH DE ERRORES ================== //
+
+} catch (err) {
+  console.error("Error en /experiencia-premium:", err);
+  return res.status(500).json({
+    status: "error",
+    message: "Ocurrió un error procesando tu experiencia. Intenta de nuevo."
+  });
+}});
+
+
+// ================== 🚀 ARRANQUE DEL SERVIDOR ================== //
 
 app.listen(PORT, () => {
-  console.log(`🚀 INNOTIVA BACKEND PRO escuchando en puerto ${PORT}`);
+  console.log(`🚀 INNOTIVA BACKEND PRO ejecutándose en puerto ${PORT}`);
+  console.log(`🌍 Disponible en https://fulstack34.onrender.com`);
 });
