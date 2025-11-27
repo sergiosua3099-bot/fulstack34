@@ -444,25 +444,39 @@ async function createMaskFromAnalysis(analysis) {
 
   return pngBuffer.toString("base64");
 }
-
 // ==================================================================================
-// 🔥 INNOTIVA — Replicate FLUX 1.1 PRO Inpainting (optimizado, sin inventar cuartos)
+// 🔥 Replicate con DOS IMÁGENES → habitación real + producto real
 // ==================================================================================
-
-async function callReplicateInpaint({ roomImageUrl, maskBase64, prompt }) {
+async function callReplicateInpaint({ roomImageUrl, maskBase64, prompt, productCutoutUrl }) {
   try {
-    console.log("[INNOTIVA] Replicate → usando FLUX-1.1-PRO Inpainting");
+    console.log("[INNOTIVA] Enviando a Replicate (2 IMÁGENES ACTIVADAS)");
 
     const body = {
       input: {
         prompt,
+
+        // 📌 Imagen del usuario (base)
         image: roomImageUrl,
+
+        // 📌 Máscara: zona permitida para insertar producto
         mask: maskBase64,
+
+        // 📌 Imagen REAL del producto — AQUÍ VA LA 2ª IMAGEN
+        conditioning_image: productCutoutUrl,
+        conditioning_scale: 1.0,   // mientras más alto, más se respeta visualmente el producto
+
+        // 🔥 Modo INPAINT REAL → ahora SÍ usará la habitación original
+        mode: "image_inpaint",
+        preserve_background: true,     
+        strength: 0.35,            // cuánto puede modificar (ideal 0.30-0.45)
+
         width: 1024,
         height: 1024,
-        num_inference_steps: 40,    // más detalle que 28
-        guidance_scale: 5.0,        // sigue mejor el prompt
-        seed: Math.floor(Math.random() * 1_000_000_000) // evita repetición
+
+        num_inference_steps: 42,   // mejor detalle que 28
+        guidance_scale: 3.0,       // menos invento, más obediencia
+        guidance_rescale: 0.08,
+        seed: Math.floor(Math.random() * 9999999)
       }
     };
 
@@ -479,11 +493,23 @@ async function callReplicateInpaint({ roomImageUrl, maskBase64, prompt }) {
     );
 
     let prediction = await response.json();
-
-    if (!prediction.id) {
-      console.log("REP ERR =>", prediction);
-      throw new Error("No se pudo crear la predicción en Replicate");
+    while (prediction.status !== "succeeded" && prediction.status !== "failed") {
+      await new Promise((r) => setTimeout(r, 2000));
+      prediction = await (await fetch(
+        `https://api.replicate.com/v1/predictions/${prediction.id}`,
+        { headers: { Authorization: `Bearer ${process.env.REPLICATE_API_TOKEN}` } }
+      )).json();
     }
+
+    if (!prediction.output || !prediction.output[0]) throw new Error("Sin salida de Replicate");
+    return prediction.output[0];
+
+  } catch (error) {
+    console.error("🔥 Error en inpainting con 2 imágenes:", error);
+    throw error;
+  }
+}
+
 
     // 🔄 Esperar resultado
     while (prediction.status !== "succeeded" && prediction.status !== "failed") {
@@ -669,11 +695,13 @@ REGLAS OBLIGATORIAS:
 Genera UNA sola imagen final muy realista del MISMO espacio real, con el producto integrado dentro de la zona marcada por la máscara.
 `;
 
-      const generatedImageUrlFromReplicate = await callReplicateInpaint({
-        roomImageUrl: userImageUrl,
-        maskBase64,
-        prompt
-      });
+     const generatedImageUrlFromReplicate = await callReplicateInpaint({
+  roomImageUrl: userImageUrl,
+  maskBase64,
+  prompt,
++ productCutoutUrl    // ← ESTA ES LA 2ª IMAGEN
+});
+
 
       // 9) Subir resultado a Cloudinary
       console.log("🔥 URL RAW desde Replicate =>", generatedImageUrlFromReplicate);
