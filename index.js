@@ -696,7 +696,7 @@ logStep("🟢 FLUX listo",{ url:generatedImageUrlFromReplicate });
         status: "complete",
         sessionId,
         room_image: userImageUrl,
-        ai_image: generatedImageUrl,
+        ai_image: generatedImageUrlFromReplicate,
         product_url: productUrl || null,
         product_name: effectiveProductName,
         message,
