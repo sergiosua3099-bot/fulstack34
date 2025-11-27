@@ -588,19 +588,46 @@ app.post(
         ideaText: idea
       });
 
-      // 6) Ajustar placement según tipo de producto + idea + crear máscara
-      const refinedPlacement = determineMaskPosition(
-        analysis,
-        productData.productType,
-        idea
-      );
-      analysis.finalPlacement = refinedPlacement;
+     // ====================== 6) Ajustar placement + crear máscara ====================== //
 
-      logStep("Generando máscara...");
-      const maskBase64 = await createMaskFromAnalysis(analysis);
-      logStep("Máscara generada correctamente");
+const refinedPlacement = determineMaskPosition(
+  analysis,
+  productData.productType,
+  idea
+);
+analysis.finalPlacement = refinedPlacement;
 
-      // ====================== 7) GENERACIÓN FLUX — UNA SOLA LLAMADA (SIEMPRE SEGURA) ====================== //
+logStep("Generando máscara...");
+const maskBase64 = await createMaskFromAnalysis(analysis);
+logStep("Máscara generada correctamente");
+
+
+// ====================== 7) CONSTRUIR EL PROMPT (AQUÍ FALTABA) ====================== //
+
+const visual = productEmbedding ? `
+Colores detectados: ${(productEmbedding.colors||[]).join(", ")}
+Materiales: ${(productEmbedding.materials||[]).join(", ")}
+Textura: ${productEmbedding.texture||"-"}
+Patrón: ${productEmbedding.pattern||"-"}` : "";
+
+const prompt = `
+REAL PHOTO INPAINTING — Integración hiperrealista del producto dentro de la habitación.
+
+Inserta **${effectiveProductName}** únicamente dentro del área blanca de la máscara.
+No cambies el resto del entorno.
+
+Reglas estrictas:
+- Mantener proporción y perspectiva real.
+- Respetar sombras originales.
+- No inventar fondo nuevo.
+- No reemplazar toda la pared.
+- Editar solo la zona blanca.
+
+${visual}
+`;
+
+
+// ====================== 8) FLUX SAFE MODE — UNA SOLA GENERACIÓN ====================== //
 
 logStep("🧩 Llamando a FLUX (safe mode)...");
 
@@ -614,48 +641,40 @@ const fluxReq = await fetch("https://api.replicate.com/v1/models/black-forest-la
     input:{
       image:userImageUrl,
       mask:`data:image/png;base64,${maskBase64}`,
-      prompt:prompt,
-      guidance:5,                
+      prompt,
+      guidance:5,
       num_inference_steps:26,
       output_format:"webp",
       output_quality:98,
-      megapixels:"1"                      // <── SIEMPRE VÁLIDO
+      megapixels:"1"   // ⇦ siempre permitido → ya no te marca error
     }
   })
 });
 
 const fluxStart = await fluxReq.json();
-
 if(!fluxStart.id) throw new Error("❌ No se pudo iniciar FLUX");
 
-// ====================== 8) POLLING HASTA OBTENER RESULTADO ====================== //
+// ====================== 9) POLLING — ESPERAR HASTA OBTENER LA IMAGEN ====================== //
 
 let fluxResult = fluxStart;
 while(fluxResult.status !== "succeeded" && fluxResult.status !== "failed") {
-  await new Promise(r => setTimeout(r, 2000)); // respetar rate limit
+  await new Promise(r => setTimeout(r, 2000));
   const check = await fetch(`https://api.replicate.com/v1/predictions/${fluxStart.id}`,{
-    headers:{ "Authorization":`Bearer ${REPLICATE_API_TOKEN}` }
+    headers:{"Authorization":`Bearer ${REPLICATE_API_TOKEN}`}
   });
   fluxResult = await check.json();
 }
 
 if(fluxResult.status === "failed" || !fluxResult.output?.[0]) {
-  throw new Error("Flux-fill-dev no devolvió imagen (modo seguro)");
+  throw new Error("Flux-fill-dev no devolvió imagen (safe mode)");
 }
 
 const generatedImageUrlFromReplicate = fluxResult.output[0];
+logStep("🟢 FLUX listo",{ url:generatedImageUrlFromReplicate });
 
-logStep("🟢 FLUX COMPLETADO",{url:generatedImageUrlFromReplicate});
+// A partir de aquí sigue tu código normal ↓↓
+// Upload a Cloudinary, message, respuesta final JSON, etc.
 
-// ====================== 9) SUBIR RESULTADO A CLOUDINARY ====================== //
-
-const uploadGenerated = await uploadUrlToCloudinary(
-  generatedImageUrlFromReplicate,
-  "innotiva/generated",
-  "room-generated"
-);
-
-const generatedImageUrl = uploadGenerated.secure_url;
 
       // 10) Copy emocional
       const message = buildEmotionalCopy({
