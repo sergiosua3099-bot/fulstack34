@@ -618,20 +618,26 @@ app.post(
       );
       analysis.finalPlacement = refinedPlacement;
 
-     // ================== 7) GENERACIÓN IA + MÁSCARA REAL ===================== //
+    // ================== 7) GENERACIÓN IA + MÁSCARA REAL ===================== //
 
-// 7.1 ➤ Convertimos el producto en una máscara blanco/negro
+// Client Replicate (NECESARIO)
+const Replicate = require("replicate");
+const replicate = new Replicate({
+  auth: process.env.REPLICATE_API_TOKEN
+});
+
+// 7.1 ➤ Convertimos el producto en una máscara blanco/negro desde Cloudinary
 const productMask = cloudinary.url(productCutoutUrl, {
   transformation: [
     { effect: "grayscale" },
-    { effect: "brightness:200" }, 
+    { effect: "brightness:200" },
     { effect: "contrast:200" },
-    { effect: "threshold:70" }  
+    { effect: "threshold:70" }
   ]
 });
 
 
-// ================== 8) PROMPT ULTRA REALISTA – NECESARIO ANTES DEL INPAINT ===================== //
+// ================== 8) PROMPT ULTRA REALISTA (antes del INPAINT) ===================== //
 
 const visualHints = productEmbedding
   ? `
@@ -644,28 +650,29 @@ Patrón/detalles: ${productEmbedding.pattern || "no detectado"}
 
 const prompt = `
 INSTRUCCIÓN GENERAL:
-Debes integrar el producto REAL dentro del área blanca marcada por la máscara.
-La imagen generada debe parecer una fotografía auténtica, no renderizada.
+Integra el producto REAL dentro del área enmascarada sin alterar el resto.
+Debe verse como fotografía real.
 
 PRODUCTO A INSERTAR:
 ${effectiveProductName}
-Referencia visual real del producto: ${productCutoutUrl}
+Referencia visual: ${productCutoutUrl}
 
-REGLAS ABSOLUTAS:
-- NO inventes un producto distinto al que enviamos.
-- Mantén proporción, perspectiva y iluminación real.
-- Todo lo NO cubierto por la máscara debe permanecer intacto.
-- Sin logos, sin textos, sin objetos añadidos.
+REGLAS:
+- Mantener luz, sombras, textura y escala realista.
+- Nada fuera de la máscara debe cambiar.
+- No añadir objetos, textos o efectos irreales.
+- Debe sentirse tomada por cámara real.
 
-Estilo detectado: ${analysis.roomStyle}
+Estilo detectado del espacio: ${analysis.roomStyle}
 ${visualHints}
 
-OBJETIVO FINAL:
-Integrar el producto como si hubiese estado ahí desde el inicio.
+OBJETIVO:
+Unificar producto + habitación como si siempre hubiera estado ahí.
 `;
 
 
-// 7.2 ➤ Envío a FLUX-FILL-DEV usando máscara + prompt
+// ================== 7.2 IA REPLICATE — Inpainting Real ===================== //
+
 let generatedImageUrlFromReplicate;
 
 try {
@@ -675,16 +682,23 @@ try {
     "black-forest-labs/FLUX.1-dev",
     {
       input: {
-        image: userImageUrl,    // Antes decía roomImageUrl ❌ (variable inexistente)
-        mask: productMask,      // máscara generada automáticamente
-        prompt: prompt          // se usa el prompt recién creado ✔
+        image: userImageUrl,    // imagen original correcta
+        mask: productMask,      // máscara generada dinámicamente
+        prompt: prompt,         // prompt realista aplicado
+        guidance: 18,
+        num_inference_steps: 28,
+        num_outputs: 1,
+        output_quality: 85,
+        output_format: "webp",
+        megapixels: "match_input"
       }
     }
   );
 
   generatedImageUrlFromReplicate = fluxResponse?.output?.[0];
+
   if (!generatedImageUrlFromReplicate)
-    throw new Error("⚠ FLUX no generó imagen");
+    throw new Error("⚠ Flux no generó imagen");
 
   console.log("🟢 Resultado final IA:", generatedImageUrlFromReplicate);
 
@@ -694,9 +708,9 @@ try {
 }
 
 
-// ================== 9) Subir resultado a Cloudinary ===================== //
+// ================== 9) SUBIR RESULTADO A CLOUDINARY ===================== //
 
-console.log("🔥 URL RAW desde Replicate =>", generatedImageUrlFromReplicate);
+console.log("🔥 RAW Replicate =>", generatedImageUrlFromReplicate);
 
 const uploadGenerated = await uploadUrlToCloudinary(
   generatedImageUrlFromReplicate,
@@ -712,12 +726,11 @@ const thumbnails = {
   after: buildThumbnails(generatedPublicId)
 };
 
-if (!userImageUrl || !generatedImageUrl) {
+if (!userImageUrl || !generatedImageUrl)
   throw new Error("Imágenes incompletas (antes/después).");
-}
 
 
-// ================== 10) Copy emocional ===================== //
+// ================== 10) COPY EMOCIONAL ===================== //
 
 const message = buildEmotionalCopy({
   roomStyle: analysis.roomStyle,
@@ -726,7 +739,7 @@ const message = buildEmotionalCopy({
 });
 
 
-// ================== 11) sessionId ===================== //
+// ================== 11) SESSION ===================== //
 
 const sessionId = crypto.randomUUID();
 
@@ -735,18 +748,23 @@ logStep("EXPERIENCIA GENERADA OK", {
 });
 
 
-// ====================== RESPUESTA FINAL BACKEND 🔥 ======================
+// ====================== 12) RESPUESTA FINAL BACKEND 🔥 ====================== //
+
 return res.status(200).json({
   ok: true,
   status: "complete",
+  session: sessionId,
+
   room_image: userImageUrl,
   ai_image: generatedImageUrl,
+
   product_url: productUrl || null,
   product_name: effectiveProductName,
   message,
   analysis,
   thumbnails,
   embedding: productEmbedding || null,
+
   created_at: new Date().toISOString()
 });
 
@@ -756,7 +774,7 @@ return res.status(200).json({
   return res.status(500).json({
     status: "error",
     message:
-      "Tuvimos un problema al generar tu propuesta. Intenta de nuevo en unos minutos."
+      "Tuvimos un problema al generar tu propuesta. Intenta otra vez."
   });
 }
 });
