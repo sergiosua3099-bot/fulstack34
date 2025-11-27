@@ -203,13 +203,34 @@ async function fetchProductFromShopify(productId) {
 
 // ================== OPENAI HELPERS ==================
 
-// 1) Embedding visual del producto
+// 1) Embedding visual del producto (con imagen en base64 para evitar timeout)
 async function buildProductEmbedding(product, productCutoutUrl) {
   const imageUrl = productCutoutUrl || product.featuredImage;
   if (!imageUrl) return null;
 
   logStep("OpenAI: embedding del producto", { title: product.title });
 
+  // 0) Descargar la imagen de Cloudinary y convertirla a BASE64 (data URL)
+  let base64Image;
+  try {
+    const imgRes = await fetch(imageUrl);
+    if (!imgRes.ok) {
+      console.error(
+        "[INNOTIVA] Error descargando imagen para embedding:",
+        imgRes.status,
+        imageUrl
+      );
+      return null;
+    }
+
+    const buffer = Buffer.from(await imgRes.arrayBuffer());
+    base64Image = `data:image/png;base64,${buffer.toString("base64")}`;
+  } catch (e) {
+    console.error("[INNOTIVA] Excepción descargando imagen para embedding:", e);
+    return null;
+  }
+
+  // 1) Prompt para que GPT devuelva SOLO JSON
   const prompt = `
 Analiza únicamente el producto que aparece en la imagen y devuélveme SOLO un JSON puro, sin texto extra.
 Estructura EXACTA:
@@ -222,6 +243,7 @@ Estructura EXACTA:
 }
 `;
 
+  // 2) Llamada a OpenAI con imagen en BASE64 (NO URL externa)
   const response = await openai.responses.create({
     model: "gpt-4.1-mini",
     input: [
@@ -229,19 +251,21 @@ Estructura EXACTA:
         role: "user",
         content: [
           { type: "input_text", text: prompt },
-          { type: "input_image", image_url: imageUrl }
+          { type: "input_image", image_url: base64Image }
         ]
       }
     ]
   });
 
+  // 3) Extraer el texto devuelto por el modelo
   const content = response.output?.[0]?.content || [];
   const text = content
-    .filter(c => c.type === "output_text")
-    .map(c => c.text)
+    .filter((c) => c.type === "output_text")
+    .map((c) => c.text)
     .join("\n")
     .trim();
 
+  // 4) Parsear a JSON usando tu helper existente
   const embedding = safeParseJSON(text, "embedding");
   return embedding;
 }
