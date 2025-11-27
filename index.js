@@ -556,21 +556,24 @@ app.post(
       // 6) Máscara
       const maskBase64 = await createMaskFromAnalysis(analysis);
 
-      // 7) Replicate inpainting
-      const prompt = `
-Inserta el producto de decoración en la zona marcada de la habitación.
-- Mantén la forma y proporciones del producto.
-- Respeta el estilo del espacio: ${analysis.roomStyle || "tu espacio"}.
-- Integra el producto de forma natural, como una foto real.
-Producto: ${effectiveProductName}.
-Si el producto es un cuadro, colócalo en la pared de forma coherente.
+     // 7) Replicate inpainting
+const prompt = `
+Inserta este producto dentro del cuarto de forma realista.
+- Mantén su proporción real.
+- No alteres el cuarto innecesariamente.
+- Integra el producto respetando sombras y luz.
+- Estilo del espacio: ${analysis.roomStyle || "moderno"}.
+Producto a insertar → ${effectiveProductName}.
+Si es un cuadro, colócalo en la pared con perspectiva natural.
 `;
 
-      const generatedImageUrlFromReplicate = await callReplicateInpaint({
-        roomImageUrl: userImageUrl,
-        maskBase64,
-        prompt
-      });
+const generatedImageUrlFromReplicate = await callReplicateInpaint({
+  roomImageUrl: userImageUrl,
+  productCutoutUrl,    // 🔥 ESTA LÍNEA ES LA QUE FALTABA
+  maskBase64,
+  prompt
+});
+
 
       // 8) Subir resultado a Cloudinary (SE LOGUEA LA URL ORIGINAL PARA DEBUG)
       console.log("🔥 URL RAW desde Replicate =>", generatedImageUrlFromReplicate);
