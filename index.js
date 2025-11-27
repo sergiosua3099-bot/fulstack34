@@ -679,7 +679,7 @@ try {
   logStep("🧩 Enviando a FLUX-FILL-DEV con máscara INPAINT...");
 
   const fluxResponse = await replicate.run(
-    "black-forest-labs/FLUX.1-dev",
+    "black-forest-labs/flux-1-inpaint",
     {
       input: {
         image: userImageUrl,    // imagen original correcta
