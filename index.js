@@ -620,50 +620,43 @@ app.post(
 
       // 7) Máscara
       const maskBase64 = await createMaskFromAnalysis(analysis);
+     // 8) PROMPT ULTRA REALISTA — REEMPLAZA TU BLOQUE ACTUAL POR ESTE 🔥
 
-      // 8) Prompt para Replicate — ULTRA estricto
-      const visualHints = productEmbedding
-        ? `
-Colores principales del producto: ${(productEmbedding.colors || []).join(", ")}.
-Materiales: ${(productEmbedding.materials || []).join(", ")}.
-Textura: ${productEmbedding.texture || ""}.
-Patrón o diseño: ${productEmbedding.pattern || ""}.
+const visualHints = productEmbedding
+  ? `
+Colores detectados en el producto: ${(productEmbedding.colors || []).join(", ")}
+Materiales: ${(productEmbedding.materials || []).join(", ")}
+Textura: ${productEmbedding.texture || "no detectada"}
+Patrón/detalles: ${productEmbedding.pattern || "no detectado"}
 `
-        : "";
+  : "";
 
-      const prompt = `
-Eres un modelo experto en INPAINTING FOTOREALISTA para interiorismo.
+const prompt = `
+INSTRUCCIÓN GENERAL:
+Debes integrar el producto REAL dentro del área blanca marcada por la máscara en la fotografía del cliente.
+La imagen generada debe parecer una fotografía auténtica, no renderizada.
 
-Tienes:
-- Una fotografía REAL del espacio del cliente (image).
-- Una máscara (mask) que marca la zona EXACTA donde puedes editar.
-- La descripción del producto a integrar: ${effectiveProductName}.
+PRODUCTO A INSERTAR (ESTE MISMO, NO OTRO):
+${effectiveProductName}
+Referencia visual real del producto: ${productCutoutUrl}
+
+REGLAS ABSOLUTAS:
+- NO inventes un producto nuevo. Usa la referencia dada.
+- Mantén proporción, sombras, luz y texturas reales.
+- Todo lo que está en negro fuera de la máscara debe permanecer intacto.
+- No agregues texto, logos ni elementos ajenos.
+- El resultado debe parecer tomado por cámara real.
+- Máximo respeto al espacio original.
+
+Estilo del espacio detectado: ${analysis.roomStyle}
 ${visualHints}
 
-Contexto del espacio:
-- Estilo del espacio: ${analysis.roomStyle || "tu espacio"}.
-- SOLO puedes modificar píxeles dentro de la zona blanca de la máscara.
-- TODO lo que está FUERA de la máscara debe permanecer idéntico a la foto original.
-
-REGLAS OBLIGATORIAS:
-1. No cambies la arquitectura del espacio (paredes, techo, ventanas, puertas se quedan igual).
-2. No muevas ni borres muebles existentes, salvo donde la máscara cubra claramente ese área.
-3. No inventes nuevos objetos ni cambies el estilo general del cuarto.
-4. Mantén iluminación, sombras y perspectiva coherentes con la foto original.
-5. El producto debe verse protagonista, nítido y realista, como si realmente estuviera en la foto.
-6. No agregues texto, logos ni elementos extra innecesarios.
-7. Si no estás seguro, conserva el fondo original y haz la integración lo más sutil y realista posible.
-
-Genera UNA sola imagen final muy realista del MISMO espacio real, con el producto integrado dentro de la zona marcada por la máscara.
+OBJETIVO FINAL:
+Generar 1 imagen final hiperrealista donde el producto REAL esté integrado en la zona de máscara
+como si hubiera estado allí desde el principio.
 `;
 
-      const generatedImageUrlFromReplicate = await callReplicateInpaint({
-        roomImageUrl: userImageUrl,
-        maskBase64,
-        prompt,
-        productCutoutUrl
-      });
-
+     
       // 9) Subir resultado a Cloudinary
       console.log("🔥 URL RAW desde Replicate =>", generatedImageUrlFromReplicate);
 
