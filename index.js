@@ -455,13 +455,15 @@ async function callReplicateInpaint({ roomImageUrl, maskBase64, prompt, productC
         // 📌 IMAGEN BASE: la foto REAL del cliente
         image: roomImageUrl,
 
+        // 🚨 FALTABA ESTO (clave para no reemplazar el cuarto)
+        init_image: roomImageUrl,  // <<< 🔥🔥🔥 Mantiene el entorno original
+
         // 📌 MÁSCARA: zona exacta donde SÍ puede tocar
         mask: maskBase64,
 
         /*
         🔥 IMAGEN DEL PRODUCTO REAL
         La usamos como condición fuerte para que copie diseño, colores y textura.
-        (si Replicate ignora este campo, igual no rompe)
         */
         conditioning_image: productCutoutUrl,
         conditioning_scale: 1.8,
@@ -469,10 +471,10 @@ async function callReplicateInpaint({ roomImageUrl, maskBase64, prompt, productC
         // Editar solo lo necesario, manteniendo el cuarto
         mode: "image_inpaint",
         preserve_background: true,
-        strength: 0.30,        // cuánto puede modificar (bajo = respeta más el cuarto)
-        prompt_strength: 0.25, // cuánto manda el texto vs la imagen base
+        strength: 0.30,        // bajo = respeta el cuarto
+        prompt_strength: 0.25, // bajo = no sustituye estilo del ambiente
 
-        // Menos creatividad, más respeto al input
+        // Menos creatividad, más fidelidad al input real
         guidance_scale: 2.0,
 
         width: 1024,
@@ -518,38 +520,23 @@ async function callReplicateInpaint({ roomImageUrl, maskBase64, prompt, productC
 
     console.log("✔ Integración IA lista");
 
-    // 3) 🧠 Normalizar la salida y forzar URL HTTP válida
+    // 3) 🧠 Normalizar salida
     let finalUrl = null;
     const out = prediction.output;
 
-    if (typeof out === "string") {
-      finalUrl = out;
-    } else if (Array.isArray(out) && out.length > 0) {
-      finalUrl = out[0];
-    } else if (out && typeof out === "object" && out.image) {
-      finalUrl = out.image;
-    }
+    if (typeof out === "string") finalUrl = out;
+    else if (Array.isArray(out) && out.length > 0) finalUrl = out[0];
+    else if (out?.image) finalUrl = out.image;
+    else if (prediction.output_url) finalUrl = prediction.output_url;
 
-    if (!finalUrl && prediction.output_url) {
-      finalUrl = prediction.output_url;
-    }
-
-    // 💥 Forzar que sea una URL HTTP válida (evitar el bug de 'h')
-    if (!finalUrl || typeof finalUrl !== "string" || !finalUrl.startsWith("http")) {
-      console.log("⚠️ Salida inesperada de Replicate:", finalUrl);
-      if (
-        prediction.output_url &&
-        typeof prediction.output_url === "string" &&
-        prediction.output_url.startsWith("http")
-      ) {
-        finalUrl = prediction.output_url;
-      } else {
-        throw new Error("Salida de Replicate inválida, no es una URL HTTP");
-      }
+    if (!finalUrl?.startsWith("http")) {
+      console.log("⚠️ Salida inesperada:", finalUrl);
+      throw new Error("Salida inválida de Replicate");
     }
 
     console.log("🔵 URL FINAL DE REPLICATE:", finalUrl);
     return finalUrl;
+
   } catch (err) {
     console.error("🔥 ERROR INPAINT REPLICATE", err);
     throw err;
