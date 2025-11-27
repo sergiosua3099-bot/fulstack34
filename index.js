@@ -1,6 +1,5 @@
 // index.js
 // INNOTIVA BACKEND PRO - /experiencia-premium
-// Usa: Cloudinary, Shopify Storefront, OpenAI Vision, Replicate inpainting
 
 require("dotenv").config();
 const express = require("express");
@@ -28,11 +27,12 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
-const SHOPIFY_STORE_DOMAIN = process.env.SHOPIFY_STORE_DOMAIN; // ej: innotiva-vision.myshopify.com
+const SHOPIFY_STORE_DOMAIN = process.env.SHOPIFY_STORE_DOMAIN;
 const SHOPIFY_STOREFRONT_TOKEN = process.env.SHOPIFY_STOREFRONT_TOKEN;
 
 const REPLICATE_API_TOKEN = process.env.REPLICATE_API_TOKEN;
-const REPLICATE_MODEL_VERSION = process.env.REPLICATE_FLUX_MODEL_ID; // debe ser el ID de versión de Replicate
+// ⚠️ Debe ser el **ID DE VERSIÓN** (no el nombre corto del modelo)
+const REPLICATE_MODEL_VERSION = process.env.REPLICATE_FLUX_MODEL_ID;
 
 // ================== MIDDLEWARE ==================
 
@@ -110,12 +110,14 @@ async function uploadUrlToCloudinary(url, folder, filenameHint = "image-from-url
 
 function buildThumbnails(publicId) {
   const low = cloudinary.url(publicId, {
+    secure: true,
     width: 400,
     height: 400,
     crop: "fill",
     quality: 70
   });
   const medium = cloudinary.url(publicId, {
+    secure: true,
     width: 1080,
     height: 1080,
     crop: "fill",
@@ -125,17 +127,17 @@ function buildThumbnails(publicId) {
   return { low, medium };
 }
 
-// Recorte PRO del producto (en realidad es un recorte cuadrado centrado con buena calidad)
+// Recorte PRO del producto (URL SIEMPRE HTTPS)
 async function createProductCutout(productImageUrl) {
-  // Lo subimos a Cloudinary en carpeta de productos
   const uploadRes = await uploadUrlToCloudinary(
     productImageUrl,
     "innotiva/products/raw",
     "product-original"
   );
 
-  // Generamos una URL recortada bonita para usar como referencia visual
+  // ⚠️ Forzamos https
   const cutoutUrl = cloudinary.url(uploadRes.public_id, {
+    secure: true,
     width: 1024,
     height: 1024,
     crop: "fill",
@@ -244,7 +246,7 @@ Estructura EXACTA:
   return embedding;
 }
 
-// 2) Análisis del cuarto (devuelve bounding box numérico)
+// 2) Análisis del cuarto
 async function analyzeRoom({ roomImageUrl, ideaText }) {
   logStep("OpenAI: análisis del cuarto");
 
@@ -266,7 +268,6 @@ Instrucciones IMPORTANTES:
 - "placement" es una zona rectangular ideal donde colocar el producto.
 - "finalPlacement" es la misma zona, ajustada si fuera necesario.
 - TODOS los campos x, y, width, height DEBEN ser NÚMEROS (sin texto).
-- NO describas posiciones con palabras, solo números.
 - Considera la idea del cliente (si existe): "${ideaText || ""}".
 `;
 
@@ -292,7 +293,6 @@ Instrucciones IMPORTANTES:
 
   let analysis = safeParseJSON(text, "análisis de cuarto");
 
-  // Si el modelo no devuelve algo usable, hacemos un fallback centrado
   if (
     !analysis ||
     !analysis.finalPlacement ||
@@ -357,10 +357,10 @@ async function callReplicateInpaint({ roomImageUrl, maskBase64, prompt }) {
     throw new Error("Falta configuración de Replicate (token o versión de modelo)");
   }
 
-  logStep("Replicate: generando imagen...", { model: REPLICATE_MODEL_VERSION });
+  logStep("INNOTIVA Replicate: generando imagen…", { model: REPLICATE_MODEL_VERSION });
 
   const body = {
-    version: REPLICATE_MODEL_VERSION, // Debe ser el ID de versión de Replicate
+    version: REPLICATE_MODEL_VERSION,
     input: {
       image: roomImageUrl,
       mask: `data:image/png;base64,${maskBase64}`,
@@ -401,9 +401,7 @@ async function callReplicateInpaint({ roomImageUrl, maskBase64, prompt }) {
     finalPrediction = await pollRes.json();
   }
 
-  logStep("Replicate final:", {
-    status: finalPrediction.status
-  });
+  logStep("Replicate final:", { status: finalPrediction.status });
 
   if (finalPrediction.status !== "succeeded") {
     console.error("Replicate final error:", finalPrediction);
@@ -440,7 +438,7 @@ function buildEmotionalCopy({ roomStyle, productName, idea }) {
 
 app.post(
   "/experiencia-premium",
-  upload.single("roomImage"), // CAMPO EXACTO como en el formulario
+  upload.single("roomImage"), // campo EXACTO del formulario
   async (req, res) => {
     const startedAt = Date.now();
 
@@ -464,7 +462,7 @@ app.post(
         });
       }
 
-      // 1) Subir imagen del usuario a Cloudinary
+      // 1) Subir imagen del usuario
       const uploadRoom = await uploadBufferToCloudinary(
         file.buffer,
         "innotiva/rooms",
@@ -475,12 +473,12 @@ app.post(
 
       logStep("Imagen del usuario subida a Cloudinary", { roomImageUrl: userImageUrl });
 
-      // 2) Traer producto desde Shopify
+      // 2) Producto desde Shopify
       const productData = await fetchProductFromShopify(productId);
       const effectiveProductName =
         productName || productData.title || "tu producto";
 
-      // 3) Recorte PRO del producto
+      // 3) Recorte PRO del producto (https)
       let productCutoutUrl = productData.featuredImage || null;
       try {
         if (productData.featuredImage) {
@@ -492,11 +490,16 @@ app.post(
         console.error("Error recortando producto, usando imagen original:", e);
       }
 
-      // 4) Embedding visual del producto
-      const productEmbedding = await buildProductEmbedding(
-        productData,
-        productCutoutUrl
-      );
+      // 4) Embedding visual (no rompe si falla)
+      let productEmbedding = null;
+      try {
+        productEmbedding = await buildProductEmbedding(
+          productData,
+          productCutoutUrl
+        );
+      } catch (e) {
+        console.error("Error en buildProductEmbedding, sigo sin embedding:", e);
+      }
 
       // 5) Análisis del cuarto
       const analysis = await analyzeRoom({
@@ -504,10 +507,10 @@ app.post(
         ideaText: idea
       });
 
-      // 6) Crear máscara
+      // 6) Máscara
       const maskBase64 = await createMaskFromAnalysis(analysis);
 
-      // 7) Llamar a Replicate (inpainting)
+      // 7) Replicate inpainting
       const prompt = `
 Inserta el producto de decoración en la zona marcada de la habitación.
 - Mantén la forma y proporciones del producto.
@@ -523,7 +526,7 @@ Si el producto es un cuadro, colócalo en la pared de forma coherente.
         prompt
       });
 
-      // 8) Subir imagen generada a Cloudinary + thumbnails
+      // 8) Subir resultado a Cloudinary
       const uploadGenerated = await uploadUrlToCloudinary(
         generatedImageUrlFromReplicate,
         "innotiva/generated",
