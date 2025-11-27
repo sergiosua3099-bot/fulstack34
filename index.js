@@ -583,42 +583,207 @@ app.post(
         ideaText: idea
       });
 
-      // 6) Ajustar placement + crear máscara
-      const refinedPlacement = determineMaskPosition(
-        analysis,
-        productData.productType,
-        idea
-      );
-      analysis.finalPlacement = refinedPlacement;
+     // ====================== 6) Ajustar placement + crear máscara ====================== //
 
-      logStep("Generando máscara...");
-      const maskBase64 = await createMaskFromAnalysis(analysis);
-      logStep("Máscara generada correctamente");
+const refinedPlacement = determineMaskPosition(
+  analysis,
+  productData.productType,
+  idea
+);
+analysis.finalPlacement = refinedPlacement;
 
-      // 7) Construir prompt
-      const visual = productEmbedding
-        ? `
-Colores detectados: ${(productEmbedding.colors || []).join(", ")}
-Materiales: ${(productEmbedding.materials || []).join(", ")}
-Textura: ${productEmbedding.texture || "-"}
-Patrón: ${productEmbedding.pattern || "-"}`
-        : "";
+logStep("Generando máscara...");
+const maskBase64 = await createMaskFromAnalysis(analysis);
+logStep("Máscara generada correctamente");
 
-      const prompt = `
-REAL PHOTO INPAINTING — Integración hiperrealista del producto dentro de la habitación.
 
-Inserta **${effectiveProductName}** únicamente dentro del área blanca de la máscara.
-No cambies el resto del entorno.
+// ====================== 7) PROMPT MEGA-ENRIQUECIDO PARA FLUX ====================== //
 
-Reglas estrictas:
-- Mantener proporción y perspectiva real.
-- Respetar sombras originales.
-- No inventar fondo nuevo.
-- No reemplazar toda la pared.
-- Editar solo la zona blanca.
-
-${visual}
+// Contexto visual del producto (si existe embedding)
+const visual = productEmbedding
+  ? `
+[DATOS VISUALES DEL PRODUCTO]
+- Colores predominantes reales: ${(productEmbedding.colors || []).join(", ")}
+- Materiales principales: ${(productEmbedding.materials || []).join(", ")}
+- Textura percibida: ${productEmbedding.texture || "-"}
+- Patrón o diseño: ${productEmbedding.pattern || "-"}
+`
+  : `
+[DATOS VISUALES DEL PRODUCTO]
+No se proporcionó metadata visual detallada. Asume que es un producto físico real,
+con materiales creíbles y acabado natural (nada caricaturesco ni plástico exagerado).
 `;
+
+// Contexto del espacio analizado
+const roomContext = `
+[CONTEXTO DEL ESPACIO]
+- Estilo aproximado del espacio: ${analysis.roomStyle || "interior neutro y habitable"}.
+- Resolución estimada: ${analysis.imageWidth || "desconocido"} x ${
+  analysis.imageHeight || "desconocido"
+} píxeles.
+- Zona reservada para el producto (máscara blanca), en coordenadas de la imagen:
+  • x: ${analysis.finalPlacement.x}
+  • y: ${analysis.finalPlacement.y}
+  • width: ${analysis.finalPlacement.width}
+  • height: ${analysis.finalPlacement.height}
+`;
+
+// Contexto de la idea del cliente (si existe)
+const ideaContext =
+  idea && idea.trim().length > 0
+    ? `
+[INTENCIÓN DEL CLIENTE]
+El cliente dejó esta indicación sobre cómo le gustaría ver el producto:
+
+"${idea.trim()}"
+
+Debes respetar esta intención en posición, orientación y presencia del producto,
+siempre que no rompa las reglas de realismo físico y coherencia con la habitación.
+`
+    : `
+[INTENCIÓN DEL CLIENTE]
+El cliente no dio instrucciones específicas. Optimiza posición y escala del producto
+para que se vea natural, armónico y aspiracional dentro del espacio.
+`;
+
+// Comportamiento según el tipo de producto
+const rawType = productData.productType || "";
+const productTypeLower = rawType.toLowerCase();
+
+let productBehaviorBlock = `
+[COMPORTAMIENTO POR DEFECTO DEL PRODUCTO]
+No se reconoce una categoría específica. Trátalo como un objeto físico real:
+- Debe tener volumen creíble.
+- Debe "apoyarse" o "anclarse" a alguna superficie lógica (suelo, pared, techo, mueble).
+- Nunca debe flotar sin soporte.
+- Tamaño moderado, que tenga sentido en comparación con muebles y paredes visibles.
+`;
+
+if (/(cuadro|lienzo|poster|marco|print|art)/i.test(rawType)) {
+  productBehaviorBlock = `
+[COMPORTAMIENTO: CUADRO / LIENZO / ARTE EN PARED]
+- Trátalo como una pieza de arte montada en la pared.
+- El plano del cuadro debe ser prácticamente paralelo al plano de la pared.
+- No debe sobresalir de forma absurda ni parecer pegado de forma plana de collage.
+- Escala sugerida: ancho visual entre 60–140 cm, en proporción con el sofá, cama o mueble cercano.
+- No generes marcos exagerados ni reflejos metálicos irreales.
+`;
+} else if (/(lámpara|lampara|ceiling|techo|aplique|colgante|pendant)/i.test(rawType)) {
+  productBehaviorBlock = `
+[COMPORTAMIENTO: LÁMPARA / ILUMINACIÓN]
+- Debe estar conectada lógicamente a techo o pared (jamás flotando sola en el aire).
+- La luz emitida debe ser coherente con la iluminación actual del cuarto.
+- No cambies toda la iluminación de la escena; solo añade aportes sutiles.
+- Prohibido crear haces de luz exagerados o efectos "fantasía".
+`;
+} else if (/(sofá|sofa|sillon|sillón|mueble|aparador|console|sideboard|rack|tv stand)/i.test(rawType)) {
+  productBehaviorBlock = `
+[COMPORTAMIENTO: MUEBLE / SOFÁ / APARADOR]
+- El producto debe apoyarse claramente sobre el suelo o sobre una base visible.
+- Debe respetar la perspectiva del suelo: líneas de fuga y horizontes coherentes.
+- Genera sombras físicas suaves en el suelo y pared cercana.
+- Escala razonable: nunca más grande que toda la pared ni más pequeño que un adorno.
+`;
+} else if (/(mesa|table|coffee table|dining|comedor|desk|escritorio)/i.test(rawType)) {
+  productBehaviorBlock = `
+[COMPORTAMIENTO: MESAS / SUPERFICIES]
+- Ubica la mesa en el piso, alineada con la geometría de la habitación.
+- Altura y proporciones coherentes con sofás, sillas u otros muebles.
+- No atravieses muebles existentes; si no hay espacio lógico, ajusta ligeramente
+  escala y posición dentro del área blanca para que se vea natural.
+`;
+} else if (/(espejo|mirror)/i.test(rawType)) {
+  productBehaviorBlock = `
+[COMPORTAMIENTO: ESPEJO]
+- El espejo debe mostrarse con leve reflejo del ambiente, pero sin inventar personas ni escenas nuevas.
+- No muestres reflejos imposibles (por ejemplo, ángulos que no coinciden con la cámara).
+- Borde y marco coherentes con el estilo del espacio (minimalista, moderno, etc.).
+`;
+} else if (/(planta|plant|florero|flor|jarrón|jarron|vase)/i.test(rawType)) {
+  productBehaviorBlock = `
+[COMPORTAMIENTO: PLANTAS / FLOREROS]
+- Volumen orgánico, iluminación suave y sombras coherentes sobre suelo o mueble.
+- No invadas toda la escena con vegetación exagerada.
+- Mantén una densidad de hojas realista, sin ruido digital.
+`;
+} else if (/(decor|escultura|figura|ornamento|adorno|statue|figurine)/i.test(rawType)) {
+  productBehaviorBlock = `
+[COMPORTAMIENTO: DECORACIÓN PEQUEÑA]
+- Colocar sobre superficies planas (mesas, repisas, aparadores) dentro del área blanca.
+- Tamaño sugerido: entre 10–40 cm de alto (proporcional al contexto).
+- No debe tapar completamente otros elementos clave del espacio.
+`;
+} else if (/(parlante|bocina|soundbar|speaker|audio)/i.test(rawType)) {
+  productBehaviorBlock = `
+[COMPORTAMIENTO: TECNOLOGÍA / AUDIO]
+- Integrado en pared, mueble de TV o repisa, según el diseño del producto.
+- Bordes definidos, sin deformaciones ni artefactos.
+- Nada de efectos de luz "gaming" a menos que el diseño lo sugiera explícitamente.
+`;
+}
+
+// Construcción final del prompt hiper detallado
+const prompt = `
+Eres un MODELO DE INPAINTING FOTOGRÁFICO de alta fidelidad.
+
+Tu objetivo es SIMULAR que el producto **${effectiveProductName}**
+YA EXISTE en la habitación real del cliente. Debe parecer una foto real,
+no una ilustración ni un render 3D.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BLOQUE 1 — REGLA SUPREMA (MÁXIMA PRIORIDAD)
+- SOLO puedes modificar los píxeles dentro del área blanca de la MÁSCARA.
+- El resto de la imagen (paredes, muebles, suelo, iluminación general)
+  debe mantenerse prácticamente idéntico al original.
+- No cambies el encuadre de cámara, ni la perspectiva global, ni la estructura del cuarto.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BLOQUE 2 — CONTEXTO DEL ESPACIO
+${roomContext}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BLOQUE 3 — INTENCIÓN DEL CLIENTE
+${ideaContext}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BLOQUE 4 — CÓMO DEBE COMPORTARSE ESTE PRODUCTO EN EL MUNDO REAL
+Tipo original de producto (Shopify): "${rawType || "generic"}"
+
+${productBehaviorBlock}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BLOQUE 5 — ASPECTO VISUAL Y MATERIALES DEL PRODUCTO
+${visual}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BLOQUE 6 — GUÍAS DE REALISMO FOTOGRÁFICO
+
+Debes garantizar que:
+1. El producto respete la perspectiva de la habitación y las líneas de fuga.
+2. Las sombras del producto coincidan con la dirección e intensidad de la luz del cuarto.
+3. Los materiales reflejen la luz de forma creíble (mate, satinado, metálico, tela, madera, etc.).
+4. No aparezcan bordes recortados, halos blancos, ruido fuerte ni artefactos raros.
+5. La escala del producto sea creíble frente a puertas, camas, sofás, mesas y otros muebles.
+
+Prohibido:
+- Regenerar toda la habitación.
+- Cambiar completamente el color de las paredes.
+- Añadir textos, logos o marcas de agua visibles.
+- Introducir personas, animales u objetos que el cliente no pidió.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+BLOQUE 7 — OBJETIVO FINAL
+
+Genera UNA sola imagen final donde:
+- El producto **${effectiveProductName}** esté perfectamente integrado en el área blanca.
+- El entorno conserve su esencia original (estilo, composición, iluminación).
+- El resultado sea tan realista que parezca una fotografía tomada con cámara profesional
+  en el mismo espacio del cliente.
+
+Tu misión es ayudar al cliente a visualizar cómo quedaría el producto en su propio entorno
+ANTES de tomar la decisión de compra.
+`;
+
 
       // 8) FLUX SAFE MODE — UNA SOLA GENERACIÓN CON POLLING
       logStep("🧩 Llamando a FLUX (safe mode)...");
