@@ -441,42 +441,93 @@ async function createMaskFromAnalysis(analysis) {
 }
 
 // ==================================================================================
-// 🔥 Replicate FLUX 1.1 PRO Inpainting
-//    - Usa 2 imágenes (cuarto + producto recortado)
-//    - Mantiene tu lógica original de polling y normalización de URL
+// 🔥 Replicate con 2 fuentes visuales reales
 // ==================================================================================
 async function callReplicateInpaint({ roomImageUrl, maskBase64, prompt, productCutoutUrl }) {
   try {
-    console.log("[INNOTIVA] Replicate → usando FLUX-1.1-PRO Inpainting");
+    console.log("[INNOTIVA] Replicate → usando FLUX 1.1 PRO con inpainting injection");
 
     const body = {
       input: {
         prompt,
 
-        // 🏠 Imagen del cliente (base)
+        // 📌 IMAGEN BASE 1 → habitación real
         image: roomImageUrl,
 
-        // 🎭 Zona editable
+        // 📌 MÁSCARA → zona editable, TODO lo demás intocable
         mask: maskBase64,
 
-        // 🖼 Segunda imagen: producto real recortado
-        conditioning_image: productCutoutUrl,
-        conditioning_scale: 1.0,
+        /*  
+        🔥 IMAGEN BASE 2 → producto real
+        ESTE PARÁMETRO es el determinante para que lo copie visualmente.
+        Sin esto → inventa. Con esto → reproduce diseño, colores, textura.
+        */
+        image_prompt: productCutoutUrl,
 
-        // 🧠 Forzar INPAINT real sin inventar cuarto nuevo
         mode: "image_inpaint",
         preserve_background: true,
-        strength: 0.35,              // 0.30–0.45 rango sano
+
+        // mientras más bajo → menos invento, más respeta lo existente
+        strength: 0.28,
+        prompt_strength: 0.22,
+
+        // Receta para que NO genere arte nuevo, solo inserte el real
+        guidance_scale: 1.8,
+        conditioning_scale: 2.0,
 
         width: 1024,
         height: 1024,
-        num_inference_steps: 42,
-        guidance_scale: 3.0,
-        guidance_rescale: 0.08,
-
-        seed: Math.floor(Math.random() * 9999999)
+        num_inference_steps: 50,
+        seed: Math.floor(Math.random() * 99999999)
       }
     };
+
+    // ⬇️ Mantengo tu lógica EXACTA de request+poll+normalize
+    let prediction = await fetch(
+      "https://api.replicate.com/v1/models/black-forest-labs/flux-1.1-pro/predictions",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${process.env.REPLICATE_API_TOKEN}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(body)
+      }
+    ).then(r => r.json());
+
+    while (prediction.status !== "succeeded" && prediction.status !== "failed") {
+      await new Promise(r => setTimeout(r, 2000));
+      prediction = await fetch(
+        `https://api.replicate.com/v1/predictions/${prediction.id}`,
+        { headers: { Authorization: `Bearer ${process.env.REPLICATE_API_TOKEN}` } }
+      ).then(r => r.json());
+    }
+
+    if (prediction.status === "failed") throw new Error("Replicate falló");
+    console.log("✔ IA generada");
+
+    let finalUrl = null;
+    const out = prediction.output;
+
+    // Normalización — esto se mantiene tal como querías
+    if (typeof out === "string") finalUrl = out;
+    else if (Array.isArray(out) && out[0]) finalUrl = out[0];
+    else if (out?.image) finalUrl = out.image;
+    else if (prediction.output_url) finalUrl = prediction.output_url;
+
+    if (!finalUrl || !finalUrl.startsWith("http")) {
+      console.log("⚠ URL inválida — fallback a output_url");
+      finalUrl = prediction.output_url;
+    }
+
+    console.log("🔵 URL final:", finalUrl);
+    return finalUrl;
+
+  } catch (err) {
+    console.error("🔥 Error en inpaint", err);
+    throw err;
+  }
+}
 
     // 1) Crear la predicción
     let prediction = await fetch(
