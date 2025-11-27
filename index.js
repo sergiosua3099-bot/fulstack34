@@ -625,30 +625,58 @@ app.post(
       const maskBase64 = await createMaskFromAnalysis(analysis);
       logStep("Máscara generada correctamente");
 
-      // 7) Prompt ultra realista
-      const visualHints = productEmbedding
-        ? `
-Colores detectados: ${(productEmbedding.colors || []).join(", ")}
-Materiales: ${(productEmbedding.materials || []).join(", ")}
-Textura: ${productEmbedding.texture || "no detectada"}
-Patrón: ${productEmbedding.pattern || "no detectado"}
-`
-        : "";
+      // ====================== 7) IA FLUX-FILL-DEV ESTABLE ====================== //
 
-      const prompt = `
-INPAINTING REALISTA HD — inserta el producto en el espacio manteniendo iluminación real.
+const visual = productEmbedding ? `
+Colores: ${(productEmbedding.colors||[]).join(", ")}
+Materiales: ${(productEmbedding.materials||[]).join(", ")}
+Textura: ${productEmbedding.texture||"no definido"}
+Patrón: ${productEmbedding.pattern||"no definido"}`:"";
 
-Producto a insertar: ${effectiveProductName}
-Referencia visual del producto: ${productCutoutUrl || "no disponible"}
+const prompt = `
+Realiza INPAINTING REALISTA conservando el entorno original.
 
-Reglas:
-- Mantener sombras, escala y luz original.
-- NO modificar zonas fuera de la máscara.
-- Debe sentirse como una fotografía real.
+Instrucciones críticas:
+- No modificar paredes, muebles ni iluminación general.
+- SOLO insertar el producto dentro de la máscara.
+- Mantener perspectiva, escala y sombras auténticas.
+- Evitar cambios artísticos o texturas nuevas.
+- Resultado debe parecer fotografía sin IA.
 
-Estilo del espacio detectado: ${analysis.roomStyle}
-${visualHints}
+Producto a colocar: ${effectiveProductName}
+${visual}
 `;
+
+logStep("🧩 Enviando → Flux (modo seguro)");
+
+const fluxReq = await fetch(
+  "https://api.replicate.com/v1/models/black-forest-labs/flux-fill-dev/predictions",
+  {
+    method:"POST",
+    headers:{
+      "Authorization":`Bearer ${REPLICATE_API_TOKEN}`,
+      "Content-Type":"application/json"
+    },
+    body:JSON.stringify({
+      input:{
+        image:userImageUrl,
+        mask:`data:image/png;base64,${maskBase64}`,
+        prompt,
+        guidance:3.5,                // MÁS REALISTA
+        influence:"low",             // <--- FIX CRÍTICO
+        output_format:"webp",
+        output_quality:95,
+        num_inference_steps:24,      // Rápido + limpio
+        megapixels:"match_input"
+      }
+    })
+  }
+);
+
+const flux = await fluxReq.json();
+if(!flux?.output?.[0]) throw new Error("Flux fail (sin output)");
+const generatedImage = flux.output[0];
+logStep("🟢 Render estable generado");
 
       // 8) Llamar a FLUX-FILL-DEV (Replicate)
       const generatedImageUrlFromReplicate = await callReplicateInpaint({
