@@ -625,58 +625,58 @@ app.post(
       const maskBase64 = await createMaskFromAnalysis(analysis);
       logStep("Máscara generada correctamente");
 
-      // ====================== 7) IA FLUX-FILL-DEV ESTABLE ====================== //
+     // ====================== 7) IA FLUX-FILL-DEV **FINAL** ====================== //
 
 const visual = productEmbedding ? `
-Colores: ${(productEmbedding.colors||[]).join(", ")}
+Colores detectados: ${(productEmbedding.colors||[]).join(", ")}
 Materiales: ${(productEmbedding.materials||[]).join(", ")}
-Textura: ${productEmbedding.texture||"no definido"}
-Patrón: ${productEmbedding.pattern||"no definido"}`:"";
+Textura: ${productEmbedding.texture||"-"}
+Patrón: ${productEmbedding.pattern||"-"}`:"";
 
 const prompt = `
-Realiza INPAINTING REALISTA conservando el entorno original.
+REAL PHOTO INPAINTING — alta fidelidad.
 
-Instrucciones críticas:
-- No modificar paredes, muebles ni iluminación general.
-- SOLO insertar el producto dentro de la máscara.
-- Mantener perspectiva, escala y sombras auténticas.
-- Evitar cambios artísticos o texturas nuevas.
-- Resultado debe parecer fotografía sin IA.
+Debes insertar *${effectiveProductName}* dentro del área blanca sin alterar el resto de la habitación.
 
-Producto a colocar: ${effectiveProductName}
+Reglas obligatorias:
+• NO reemplazar paredes, muebles ni fondo completo.
+• Mantener perspectiva real de la cámara.
+• Mantener sombras e iluminación natural original.
+• Integración 100% fotográfica, nada artístico, nada surreal.
+• Solo modificar la zona blanca de la máscara.
+• Si el entorno está poco definido, mantenerlo en vez de inventar uno nuevo.
+
 ${visual}
 `;
 
-logStep("🧩 Enviando → Flux (modo seguro)");
+logStep("🧩 Enviando a FLUX con config óptima móvil/PC...");
 
-const fluxReq = await fetch(
-  "https://api.replicate.com/v1/models/black-forest-labs/flux-fill-dev/predictions",
-  {
-    method:"POST",
-    headers:{
-      "Authorization":`Bearer ${REPLICATE_API_TOKEN}`,
-      "Content-Type":"application/json"
-    },
-    body:JSON.stringify({
-      input:{
-        image:userImageUrl,
-        mask:`data:image/png;base64,${maskBase64}`,
-        prompt,
-        guidance:3.5,                // MÁS REALISTA
-        influence:"low",             // <--- FIX CRÍTICO
-        output_format:"webp",
-        output_quality:95,
-        num_inference_steps:24,      // Rápido + limpio
-        megapixels:"match_input"
-      }
-    })
-  }
-);
+const fluxReq = await fetch("https://api.replicate.com/v1/models/black-forest-labs/flux-fill-dev/predictions",{
+  method:"POST",
+  headers:{
+    "Authorization":`Bearer ${REPLICATE_API_TOKEN}`,
+    "Content-Type":"application/json"
+  },
+  body:JSON.stringify({
+    input:{
+      image:userImageUrl,
+      mask:`data:image/png;base64,${maskBase64}`,
+      prompt,
+      guidance:4.2,                // 🔥 balance realismo / flexibilidad
+      num_inference_steps:26,
+      output_format:"png",
+      output_quality:98,
+      megapixels:"match_input"
+    }
+  })
+});
 
 const flux = await fluxReq.json();
 if(!flux?.output?.[0]) throw new Error("Flux fail (sin output)");
 const generatedImage = flux.output[0];
-logStep("🟢 Render estable generado");
+
+logStep("🟢 Resultado FINAL =>", { url:generatedImage });
+
 
       // 8) Llamar a FLUX-FILL-DEV (Replicate)
       const generatedImageUrlFromReplicate = await callReplicateInpaint({
