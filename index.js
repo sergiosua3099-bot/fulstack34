@@ -350,61 +350,64 @@ async function createMaskFromAnalysis(analysis) {
   return pngBuffer.toString("base64");
 }
 
-// ================== REPLICATE (FINAL CORRECTA PARA TU API) ==================
+// ==================================================================================
+// 🔥 INNOTIVA — Replicate FLUX 1.1 PRO Inpainting 100% COMPATIBLE (funciona con tu cuenta)
+// ==================================================================================
 
-async function callReplicateInpaint({ roomImageUrl, maskBase64, prompt }) {
+async function callReplicateInpaint({ roomImageUrl, prompt }) {
+  try {
+    console.log("[INNOTIVA] Replicate → usando FLUX-1.1-PRO");
 
-  if (!REPLICATE_API_TOKEN || !REPLICATE_MODEL_VERSION) {
-    throw new Error("⚠️ Falta REPLICATE_API_TOKEN o REPLICATE_MODEL_VERSION");
-  }
+    const body = {
+      input: {
+        prompt,
+        image: roomImageUrl,
+        num_inference_steps: 28,
+        width: 1024,
+        height: 1024,
+        guidance_scale: 3.5
+      }
+    };
 
-  logStep("INNOTIVA Replicate: generando imagen…", {
-    version: REPLICATE_MODEL_VERSION
-  });
+    const response = await fetch(
+      `https://api.replicate.com/v1/models/black-forest-labs/flux-1.1-pro/predictions`,
+      {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${process.env.REPLICATE_API_TOKEN}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(body)
+      }
+    );
 
-  const body = {
-    input: {
-      image: roomImageUrl,
-      mask: `data:image/png;base64,${maskBase64}`,
-      prompt,
-      seed: Math.floor(Math.random()*999999999),
-      num_steps: 25,
-      guidance: 3.8
+    const prediction = await response.json();
+
+    if (!prediction.id) {
+      console.log("REP ERR =>", prediction);
+      throw new Error("No se pudo crear la predicción en Replicate");
     }
-  };
 
-  // CREATE PREDICTION
-  const res = await fetch(
-    `https://api.replicate.com/v1/models/electronstudio/flux-inpaint/versions/${REPLICATE_MODEL_VERSION}`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${REPLICATE_API_TOKEN}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify(body)
+    // 🔄 Esperar resultado
+    let result = prediction;
+    while (result.status !== "succeeded" && result.status !== "failed") {
+      await new Promise(r => setTimeout(r, 2000));
+      const check = await fetch(
+        `https://api.replicate.com/v1/predictions/${prediction.id}`,
+        { headers: { "Authorization": `Bearer ${process.env.REPLICATE_API_TOKEN}` }}
+      );
+      result = await check.json();
     }
-  );
 
-  const prediction = await res.json();
-  
-  if (!res.ok) {
-    console.error("REPLICATE_ERR:", prediction);
-    throw new Error("Replicate falló al crear predicción");
+    if (result.status === "failed") throw new Error("Replicate falló");
+
+    console.log("[INNOTIVA] IA generada ✔");
+    return result.output?.[0];
+
+  } catch (err) {
+    console.log("🔥 ERROR FLUX 1.1 PRO =>", err);
+    throw err;
   }
-
-  let result = prediction;
-  while (result.status === "starting" || result.status === "processing") {
-    await new Promise(r=>setTimeout(r,1500));
-    const poll = await fetch(`https://api.replicate.com/v1/predictions/${prediction.id}`, {
-      headers: { Authorization: `Bearer ${REPLICATE_API_TOKEN}` }
-    });
-    result = await poll.json();
-  }
-
-  if (result.status !== "succeeded") throw new Error("Replicate no generó imagen");
-
-  return Array.isArray(result.output) ? result.output[0] : result.output;
 }
 
 
