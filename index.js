@@ -616,54 +616,48 @@ app.post(
       );
       analysis.finalPlacement = refinedPlacement;
 
-     // ================== 7) CREAR MÁSCARA A PARTIR DEL ANÁLISIS ================== //
+    // ============================ 7) CREAR MÁSCARA =============================== //
 
-const maskBase64 = await createMaskFromAnalysis(analysis);  // 🔥 máscara real de ubicación
+logStep("Generando máscara...");
+const maskBase64 = await createMaskFromAnalysis(analysis);
 logStep("Máscara generada correctamente");
 
 
-// ================== 8) PROMPT ULTRA REALISTA — MODO C (PRO HD+) ================== //
+// ============================ 8) PROMPT REALISTA ============================ //
 
 const visualHints = productEmbedding
   ? `
-Colores: ${(productEmbedding.colors || []).join(", ")}
+Colores del producto: ${(productEmbedding.colors || []).join(", ")}
 Materiales: ${(productEmbedding.materials || []).join(", ")}
 Textura: ${productEmbedding.texture || "no detectada"}
-Detalles/Patrón: ${productEmbedding.pattern || "no detectado"}
-`
-  : "";
+Patrón: ${productEmbedding.pattern || "no detectado"}
+` : "";
 
 const prompt = `
-INSTRUCCIÓN PRINCIPAL:
-Inserta el producto REAL dentro del área marcada por la máscara blanco/negro.
-Debe verse 100% fotográfico — no generado por IA.
+INPAINTING REALISTA HD — inserta el producto en el espacio manteniendo iluminación real.
 
-PRODUCTO:
-${effectiveProductName}
-Referencia real del producto: ${productCutoutUrl}
+Producto a insertar: ${effectiveProductName}
+Referencia: ${productCutoutUrl}
 
-REGLAS ESTRICTAS:
-- Mantener escala, sombras, contraste y iluminación original.
-- Nada fuera de la máscara debe ser modificado.
-- No añadir texto, logos ni elementos nuevos.
-- El resultado debe lucir como una foto tomada en cámara real.
+Reglas:
+- Mantener sombras, escala y luz original.
+- NO modificar zonas fuera de la máscara.
+- Debe sentirse fotografía real.
 
-Detalles del espacio detectado: ${analysis.roomStyle}
+Estilo del espacio detectado: ${analysis.roomStyle}
 ${visualHints}
-
-OBJETIVO:
-Que el producto parezca que SIEMPRE estuvo ahí.
 `;
 
 
-// ============== 9) IA — FLUX-FILL-DEV (MODO PRO CINEMATIC HD+) ============== //
+// ===================== 9) FLUX-FILL-DEV — INPAINTING HD ===================== //
 
 let generatedImageUrlFromReplicate;
 
 try {
+
   logStep("🧩 Generando integración fotográfica HD+ con flux-fill-dev...");
 
-  const flux = await fetch(`https://api.replicate.com/v1/models/black-forest-labs/flux-fill-dev/predictions`, {
+  const flux = await fetch("https://api.replicate.com/v1/models/black-forest-labs/flux-fill-dev/predictions", {
     method: "POST",
     headers: {
       "Authorization": `Bearer ${REPLICATE_API_TOKEN}`,
@@ -672,7 +666,7 @@ try {
     body: JSON.stringify({
       input: {
         image: userImageUrl,
-        mask: `data:image/png;base64,${maskBase64}`,   // 🔥 FIX FINAL
+        mask: `data:image/png;base64,${maskBase64}`,   // ← FIX CRÍTICO
         prompt: prompt,
         guidance: 6,
         num_inference_steps: 34,
@@ -683,15 +677,23 @@ try {
     })
   });
 
-  const fluxResponse = await flux.json();
-  generatedImageUrlFromReplicate = fluxResponse?.output?.[0];
+  const result = await flux.json();
+  generatedImageUrlFromReplicate = result?.output?.[0];
 
   if (!generatedImageUrlFromReplicate) throw new Error("Flux-fill-dev no devolvió imagen");
 
+  console.log("🟢 Resultado FLUX:", generatedImageUrlFromReplicate);
 
-// ================== 10) SUBIR EL RESULTADO A CLOUDINARY ================== //
+} catch (error) {
+  console.error("🚨 Error con flux-fill-dev:", error);
+  return res.status(500).json({
+    status: "error",
+    message: "Fallo generación AI con flux-fill-dev"
+  });
+}
 
-console.log("🔥 RAW IA =>", generatedImageUrlFromReplicate);
+
+// ======================= 10) SUBIR RESULTADO A CLOUDINARY ==================== //
 
 const uploadGenerated = await uploadUrlToCloudinary(
   generatedImageUrlFromReplicate,
@@ -706,9 +708,6 @@ const thumbnails = {
   before: buildThumbnails(roomPublicId),
   after: buildThumbnails(generatedPublicId)
 };
-
-if (!userImageUrl || !generatedImageUrl)
-  throw new Error("Faltan imágenes para entregar resultado al usuario.");
 
 
 // ================== 11) COPY EMOCIONAL PARA LA WEB ================== //
