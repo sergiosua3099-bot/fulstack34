@@ -32,7 +32,7 @@ const SHOPIFY_STOREFRONT_TOKEN = process.env.SHOPIFY_STOREFRONT_TOKEN;
 
 const REPLICATE_API_TOKEN = process.env.REPLICATE_API_TOKEN;
 // ⚠️ Debe ser el **ID DE VERSIÓN** (no el nombre corto del modelo)
-const REPLICATE_MODEL_VERSION = process.env.REPLICATE_FLUX_MODEL_ID;
+const REPLICATE_MODEL_VERSION = process.env.REPLICATE_MODEL_VERSION;
 
 // ================== MIDDLEWARE ==================
 
