@@ -618,9 +618,20 @@ app.post(
       );
       analysis.finalPlacement = refinedPlacement;
 
-      // 7) Máscara
-      const maskBase64 = await createMaskFromAnalysis(analysis);
-     // 8) PROMPT ULTRA REALISTA — REEMPLAZA TU BLOQUE ACTUAL POR ESTE 🔥
+     // ================== 7) GENERACIÓN IA + MÁSCARA REAL ===================== //
+
+// 7.1 ➤ Convertimos el producto en una máscara blanco/negro
+const productMask = cloudinary.url(productCutoutUrl, {
+  transformation: [
+    { effect: "grayscale" },
+    { effect: "brightness:200" }, 
+    { effect: "contrast:200" },
+    { effect: "threshold:70" }  
+  ]
+});
+
+
+// ================== 8) PROMPT ULTRA REALISTA – NECESARIO ANTES DEL INPAINT ===================== //
 
 const visualHints = productEmbedding
   ? `
@@ -633,103 +644,123 @@ Patrón/detalles: ${productEmbedding.pattern || "no detectado"}
 
 const prompt = `
 INSTRUCCIÓN GENERAL:
-Debes integrar el producto REAL dentro del área blanca marcada por la máscara en la fotografía del cliente.
+Debes integrar el producto REAL dentro del área blanca marcada por la máscara.
 La imagen generada debe parecer una fotografía auténtica, no renderizada.
 
-PRODUCTO A INSERTAR (ESTE MISMO, NO OTRO):
+PRODUCTO A INSERTAR:
 ${effectiveProductName}
 Referencia visual real del producto: ${productCutoutUrl}
 
 REGLAS ABSOLUTAS:
-- NO inventes un producto nuevo. Usa la referencia dada.
-- Mantén proporción, sombras, luz y texturas reales.
-- Todo lo que está en negro fuera de la máscara debe permanecer intacto.
-- No agregues texto, logos ni elementos ajenos.
-- El resultado debe parecer tomado por cámara real.
-- Máximo respeto al espacio original.
+- NO inventes un producto distinto al que enviamos.
+- Mantén proporción, perspectiva y iluminación real.
+- Todo lo NO cubierto por la máscara debe permanecer intacto.
+- Sin logos, sin textos, sin objetos añadidos.
 
-Estilo del espacio detectado: ${analysis.roomStyle}
+Estilo detectado: ${analysis.roomStyle}
 ${visualHints}
 
 OBJETIVO FINAL:
-Generar 1 imagen final hiperrealista donde el producto REAL esté integrado en la zona de máscara
-como si hubiera estado allí desde el principio.
+Integrar el producto como si hubiese estado ahí desde el inicio.
 `;
 
-     
-      // 9) Subir resultado a Cloudinary
-      console.log("🔥 URL RAW desde Replicate =>", generatedImageUrlFromReplicate);
 
-      const uploadGenerated = await uploadUrlToCloudinary(
-        generatedImageUrlFromReplicate,
-        "innotiva/generated",
-        "room-generated"
-      );
+// 7.2 ➤ Envío a FLUX-FILL-DEV usando máscara + prompt
+let generatedImageUrlFromReplicate;
 
-      const generatedImageUrl = uploadGenerated.secure_url;
-      const generatedPublicId = uploadGenerated.public_id;
+try {
+  logStep("🧩 Enviando a FLUX-FILL-DEV con máscara INPAINT...");
 
-      const thumbnails = {
-        before: buildThumbnails(roomPublicId),
-        after: buildThumbnails(generatedPublicId)
-      };
-
-      if (!userImageUrl || !generatedImageUrl) {
-        throw new Error("Imágenes incompletas (antes/después).");
+  const fluxResponse = await replicate.run(
+    "black-forest-labs/FLUX.1-dev",
+    {
+      input: {
+        image: userImageUrl,    // Antes decía roomImageUrl ❌ (variable inexistente)
+        mask: productMask,      // máscara generada automáticamente
+        prompt: prompt          // se usa el prompt recién creado ✔
       }
-
-      // 10) Copy emocional
-      const message = buildEmotionalCopy({
-        roomStyle: analysis.roomStyle,
-        productName: effectiveProductName,
-        idea
-      });
-
-      // 11) sessionId
-      const sessionId = crypto.randomUUID();
-
-      const payload = {
-        sessionId,
-        status: "success",
-        userImageUrl,
-        generatedImageUrl,
-        productUrl: productUrl || null,
-        productName: effectiveProductName,
-        message,
-        analysis,
-        thumbnails,
-        productEmbedding,
-        createdAt: new Date().toISOString()
-      };
-
-      logStep("EXPERIENCIA GENERADA OK", {
-        elapsedMs: Date.now() - startedAt
-      });
-
-      // ====================== RESPUESTA FINAL BACKEND 🔥 ======================
-      return res.status(200).json({
-        ok: true,
-        status: "complete",
-        room_image: userImageUrl,
-        ai_image: generatedImageUrl,
-        product_url: productUrl || null,
-        product_name: effectiveProductName,
-        message,
-        analysis,
-        thumbnails,
-        embedding: productEmbedding || null,
-        created_at: new Date().toISOString()
-      });
-    } catch (err) {
-      console.error("Error en /experiencia-premium:", err);
-      return res.status(500).json({
-        status: "error",
-        message:
-          "Tuvimos un problema al generar tu propuesta. Intenta de nuevo en unos minutos."
-      });
     }
-  }
+  );
+
+  generatedImageUrlFromReplicate = fluxResponse?.output?.[0];
+  if (!generatedImageUrlFromReplicate)
+    throw new Error("⚠ FLUX no generó imagen");
+
+  console.log("🟢 Resultado final IA:", generatedImageUrlFromReplicate);
+
+} catch (error) {
+  console.error("🚨 Error FLUX:", error);
+  return res.status(500).json({ status:"error", message:"Fallo generación IA" });
+}
+
+
+// ================== 9) Subir resultado a Cloudinary ===================== //
+
+console.log("🔥 URL RAW desde Replicate =>", generatedImageUrlFromReplicate);
+
+const uploadGenerated = await uploadUrlToCloudinary(
+  generatedImageUrlFromReplicate,
+  "innotiva/generated",
+  "room-generated"
 );
+
+const generatedImageUrl = uploadGenerated.secure_url;
+const generatedPublicId = uploadGenerated.public_id;
+
+const thumbnails = {
+  before: buildThumbnails(roomPublicId),
+  after: buildThumbnails(generatedPublicId)
+};
+
+if (!userImageUrl || !generatedImageUrl) {
+  throw new Error("Imágenes incompletas (antes/después).");
+}
+
+
+// ================== 10) Copy emocional ===================== //
+
+const message = buildEmotionalCopy({
+  roomStyle: analysis.roomStyle,
+  productName: effectiveProductName,
+  idea
+});
+
+
+// ================== 11) sessionId ===================== //
+
+const sessionId = crypto.randomUUID();
+
+logStep("EXPERIENCIA GENERADA OK", {
+  elapsedMs: Date.now() - startedAt
+});
+
+
+// ====================== RESPUESTA FINAL BACKEND 🔥 ======================
+return res.status(200).json({
+  ok: true,
+  status: "complete",
+  room_image: userImageUrl,
+  ai_image: generatedImageUrl,
+  product_url: productUrl || null,
+  product_name: effectiveProductName,
+  message,
+  analysis,
+  thumbnails,
+  embedding: productEmbedding || null,
+  created_at: new Date().toISOString()
+});
+
+
+} catch (err) {
+  console.error("Error en /experiencia-premium:", err);
+  return res.status(500).json({
+    status: "error",
+    message:
+      "Tuvimos un problema al generar tu propuesta. Intenta de nuevo en unos minutos."
+  });
+}
+});
+
 
 // ================== ARRANQUE SERVIDOR ==================
 
