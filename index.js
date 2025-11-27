@@ -1,4 +1,4 @@
-// index.js 
+// index.js
 // INNOTIVA BACKEND PRO - /experiencia-premium
 
 require("dotenv").config();
@@ -305,8 +305,8 @@ Instrucciones IMPORTANTES:
 
   const content = response.output?.[0]?.content || [];
   const text = content
-    .filter(c => c.type === "output_text")
-    .map(c => c.text)
+    .filter((c) => c.type === "output_text")
+    .map((c) => c.text)
     .join("\n")
     .trim();
 
@@ -457,24 +457,7 @@ async function callReplicateInpaint({ roomImageUrl, maskBase64, prompt, productC
         // 📌 MÁSCARA → zona editable, TODO lo demás intocable
         mask: maskBase64,
 
-       // ==================================================================================
-// 🔥 Replicate con 2 fuentes visuales reales
-// ==================================================================================
-async function callReplicateInpaint({ roomImageUrl, maskBase64, prompt, productCutoutUrl }) {
-  try {
-    console.log("[INNOTIVA] Replicate → usando FLUX 1.1 PRO con inpainting injection");
-
-    const body = {
-      input: {
-        prompt,
-
-        // 📌 IMAGEN BASE 1 → habitación real
-        image: roomImageUrl,
-
-        // 📌 MÁSCARA → zona editable, TODO lo demás intocable
-        mask: maskBase64,
-
-        /*  
+        /*
         🔥 IMAGEN BASE 2 → producto real
         ESTE PARÁMETRO es el determinante para que lo copie visualmente.
         Sin esto → inventa. Con esto → reproduce diseño, colores, textura.
@@ -499,53 +482,78 @@ async function callReplicateInpaint({ roomImageUrl, maskBase64, prompt, productC
       }
     };
 
-    // ⬇️ Mantengo tu lógica EXACTA de request+poll+normalize
+    // 1) Crear la predicción
     let prediction = await fetch(
       "https://api.replicate.com/v1/models/black-forest-labs/flux-1.1-pro/predictions",
       {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${process.env.REPLICATE_API_TOKEN}`,
+          Authorization: `Bearer ${REPLICATE_API_TOKEN}`,
           "Content-Type": "application/json"
         },
         body: JSON.stringify(body)
       }
-    ).then(r => r.json());
+    ).then((r) => r.json());
 
-    while (prediction.status !== "succeeded" && prediction.status !== "failed") {
-      await new Promise(r => setTimeout(r, 2000));
-      prediction = await fetch(
-        `https://api.replicate.com/v1/predictions/${prediction.id}`,
-        { headers: { Authorization: `Bearer ${process.env.REPLICATE_API_TOKEN}` } }
-      ).then(r => r.json());
+    if (!prediction.id) {
+      console.log("REP ERR =>", prediction);
+      throw new Error("No se pudo crear la predicción en Replicate");
     }
 
-    if (prediction.status === "failed") throw new Error("Replicate falló");
-    console.log("✔ IA generada");
+    // 2) 🔄 Polling hasta que termine
+    while (prediction.status !== "succeeded" && prediction.status !== "failed") {
+      await new Promise((r) => setTimeout(r, 2000));
+      prediction = await fetch(
+        `https://api.replicate.com/v1/predictions/${prediction.id}`,
+        {
+          headers: { Authorization: `Bearer ${REPLICATE_API_TOKEN}` }
+        }
+      ).then((r) => r.json());
+    }
 
+    if (prediction.status === "failed") {
+      console.log("REP FAILED =>", prediction);
+      throw new Error("Replicate falló");
+    }
+
+    console.log("[INNOTIVA] IA generada ✔");
+
+    // 3) 🧠 Normalizar la salida y forzar URL HTTP válida
     let finalUrl = null;
     const out = prediction.output;
 
-    // Normalización — esto se mantiene tal como querías
-    if (typeof out === "string") finalUrl = out;
-    else if (Array.isArray(out) && out[0]) finalUrl = out[0];
-    else if (out?.image) finalUrl = out.image;
-    else if (prediction.output_url) finalUrl = prediction.output_url;
+    if (typeof out === "string") {
+      finalUrl = out;
+    } else if (Array.isArray(out) && out.length > 0) {
+      finalUrl = out[0];
+    } else if (out && typeof out === "object" && out.image) {
+      finalUrl = out.image;
+    }
 
-    if (!finalUrl || !finalUrl.startsWith("http")) {
-      console.log("⚠ URL inválida — fallback a output_url");
+    if (!finalUrl && prediction.output_url) {
       finalUrl = prediction.output_url;
     }
 
-    console.log("🔵 URL final:", finalUrl);
-    return finalUrl;
+    if (!finalUrl || typeof finalUrl !== "string" || !finalUrl.startsWith("http")) {
+      console.log("⚠️ Salida inesperada de Replicate:", finalUrl);
+      if (
+        prediction.output_url &&
+        typeof prediction.output_url === "string" &&
+        prediction.output_url.startsWith("http")
+      ) {
+        finalUrl = prediction.output_url;
+      } else {
+        throw new Error("Salida de Replicate inválida, no es una URL HTTP");
+      }
+    }
 
+    console.log("🔵 URL FINAL DE REPLICATE:", finalUrl);
+    return finalUrl;
   } catch (err) {
     console.error("🔥 Error en inpaint", err);
     throw err;
   }
 }
-
 
 // ================== COPY EMOCIONAL ==================
 
@@ -604,7 +612,9 @@ app.post(
       const userImageUrl = uploadRoom.secure_url;
       const roomPublicId = uploadRoom.public_id;
 
-      logStep("Imagen del usuario subida a Cloudinary", { roomImageUrl: userImageUrl });
+      logStep("Imagen del usuario subida a Cloudinary", {
+        roomImageUrl: userImageUrl
+      });
 
       // 2) Producto desde Shopify
       const productData = await fetchProductFromShopify(productId);
@@ -757,7 +767,6 @@ Genera UNA sola imagen final muy realista del MISMO espacio real, con el product
         embedding: productEmbedding || null,
         created_at: new Date().toISOString()
       });
-
     } catch (err) {
       console.error("Error en /experiencia-premium:", err);
       return res.status(500).json({
