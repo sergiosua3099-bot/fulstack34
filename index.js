@@ -618,23 +618,41 @@ app.post(
       );
       analysis.finalPlacement = refinedPlacement;
 
-    // ================== 7) GENERACIÓN IA + MÁSCARA REAL ===================== //
+  // ================== 7) FLUX-FILL-DEV — INPAINTING REAL ===================== //
 
-// Client Replicate (NECESARIO)
-const Replicate = require("replicate");
-const replicate = new Replicate({
-  auth: process.env.REPLICATE_API_TOKEN
-});
+let generatedImageUrlFromReplicate;
 
-// 7.1 ➤ Convertimos el producto en una máscara blanco/negro desde Cloudinary
-const productMask = cloudinary.url(productCutoutUrl, {
-  transformation: [
-    { effect: "grayscale" },
-    { effect: "brightness:200" },
-    { effect: "contrast:200" },
-    { effect: "threshold:70" }
-  ]
-});
+try {
+  logStep("🧩 Enviando a FLUX-FILL-DEV con máscara INPAINT...");
+
+  const fluxResponse = await replicate.run(
+    "black-forest-labs/flux-fill-dev",     // << ESTE ES EL MODELO CORRECTO Y FUNCIONAL
+    {
+      input: {
+        image: userImageUrl,               // Imagen original del cuarto
+        mask: productMask,                 // Nuestra máscara BN generada
+        prompt: prompt,                    // Prompt ultra-realista ya generado
+        guidance: 7,                       // menor = más fiel a la foto, más realismo
+        num_inference_steps: 22,           // más rápido + mantiene calidad
+        output_format: "webp",
+        output_quality: 90,
+        megapixels: "1"                    // match_input si quieres más resolución
+      }
+    }
+  );
+
+  generatedImageUrlFromReplicate = fluxResponse?.output?.[0];
+
+  if (!generatedImageUrlFromReplicate)
+    throw new Error("Flux-fill-dev no devolvió imagen (output vacío).");
+
+  console.log("🟢 Resultado final IA:", generatedImageUrlFromReplicate);
+
+} catch (error) {
+  console.error("🚨 Error desde flux-fill-dev:", error);
+  return res.status(500).json({ status:"error", message:"Fallo generación IA con flux-fill-dev" });
+}
+
 
 
 // ================== 8) PROMPT ULTRA REALISTA (antes del INPAINT) ===================== //
