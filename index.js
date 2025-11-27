@@ -31,9 +31,9 @@ const SHOPIFY_STORE_DOMAIN = process.env.SHOPIFY_STORE_DOMAIN;
 const SHOPIFY_STOREFRONT_TOKEN = process.env.SHOPIFY_STOREFRONT_TOKEN;
 
 const REPLICATE_API_TOKEN = process.env.REPLICATE_API_TOKEN;
-// ⚠️ Debe ser el ID DE VERSIÓN (no el nombre corto del modelo)
-const REPLICATE_MODEL_VERSION =
-  process.env.REPLICATE_MODEL_VERSION || "nbhx3kj26srm80ck9rwbscz1q0";
+// Para FLUX-FILL-DEV usamos endpoint de modelo, no hace falta version en el body
+const REPLICATE_MODEL_SLUG =
+  process.env.REPLICATE_MODEL_SLUG || "black-forest-labs/flux-fill-dev";
 
 // ================== MIDDLEWARE ==================
 
@@ -76,11 +76,7 @@ function safeParseJSON(raw, label = "JSON") {
 
 // ================== CLOUDINARY HELPERS ==================
 
-async function uploadBufferToCloudinary(
-  buffer,
-  folder,
-  filenameHint = "image"
-) {
+async function uploadBufferToCloudinary(buffer, folder, filenameHint = "image") {
   return new Promise((resolve, reject) => {
     const base64 = buffer.toString("base64");
     cloudinary.uploader.upload(
@@ -450,40 +446,48 @@ async function createMaskFromAnalysis(analysis) {
 }
 
 // ===================================================
-//  🔥 FLUX-FILL-DEV INPAINT — Inserción con producto real
+//  🔥 FLUX-FILL-DEV — Inpainting en el cuarto real
 // ===================================================
 
 async function callReplicateInpaint({
   roomImageUrl,
   maskBase64,
   prompt,
-  productCutoutUrl
+  productCutoutUrl // reservado para futuros upgrades (controlnet / lora / etc.)
 }) {
   console.log("🧩 Enviando a FLUX-FILL-DEV INPAINT...");
 
-  const body = {
-    version: REPLICATE_MODEL_VERSION, // ✅ versión requerida por la API
-    input: {
-      image: roomImageUrl,
-      mask: `data:image/png;base64,${maskBase64}`,
-      prompt,
-      // referencia visual del producto (si el modelo la soporta)
-      reference_image: productCutoutUrl,
-      // puedes ajustar estos si el modelo los soporta
-      // guidance: 7,
-      // steps: 32,
-      // seed: 42,
-    }
-  };
+  const maskDataUrl = `data:image/png;base64,${maskBase64}`;
 
-  const prediction = await fetch("https://api.replicate.com/v1/predictions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${REPLICATE_API_TOKEN}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify(body)
-  }).then((r) => r.json());
+  // Según doc que pegaste: se usa /v1/models/{model}/predictions + input
+  const createRes = await fetch(
+    `https://api.replicate.com/v1/models/${encodeURIComponent(
+      REPLICATE_MODEL_SLUG
+    )}/predictions`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${REPLICATE_API_TOKEN}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        input: {
+          image: roomImageUrl,
+          mask: maskDataUrl,
+          prompt: prompt,
+          guidance: 20,
+          num_outputs: 1,
+          output_format: "webp",
+          output_quality: 80,
+          num_inference_steps: 28,
+          megapixels: "match_input"
+          // seed: 42 // si quieres runs repetibles, lo activas
+        }
+      })
+    }
+  );
+
+  const prediction = await createRes.json();
 
   if (!prediction || !prediction.id) {
     console.error("❌ Replicate no inició predicción:", prediction);
@@ -492,30 +496,23 @@ async function callReplicateInpaint({
 
   let result = prediction;
   while (result.status !== "succeeded" && result.status !== "failed") {
-    await new Promise((r) => setTimeout(r, 1700));
-    result = await fetch(
-      `https://api.replicate.com/v1/predictions/${prediction.id}`,
+    await new Promise((r) => setTimeout(r, 1800));
+    const pollRes = await fetch(
+      `https://api.replicate.com/v1/predictions/${result.id}`,
       {
         headers: { Authorization: `Bearer ${REPLICATE_API_TOKEN}` }
       }
-    ).then((r) => r.json());
+    );
+    result = await pollRes.json();
   }
 
   if (result.status === "failed") {
     console.error("💥 Falló INPAINT:", result);
-    throw new Error("Predicción fallida — modelo o input inválido");
+    throw new Error("Generación no completada");
   }
 
-  const outputUrl = Array.isArray(result.output)
-    ? result.output[0]
-    : result.output;
-
-  if (!outputUrl) {
-    throw new Error("Salida inválida de Replicate");
-  }
-
-  console.log("🟢 Imagen generada por FLUX-FILL-DEV:", outputUrl);
-  return outputUrl;
+  console.log("🟢 Resultado final FLUX:", result.output?.[0]);
+  return result.output?.[0];
 }
 
 // ================== COPY EMOCIONAL ==================
@@ -668,10 +665,7 @@ Genera UNA sola imagen final muy realista del MISMO espacio real, con el product
       });
 
       // 9) Subir resultado a Cloudinary
-      console.log(
-        "🔥 URL RAW desde Replicate =>",
-        generatedImageUrlFromReplicate
-      );
+      console.log("🔥 URL RAW desde Replicate =>", generatedImageUrlFromReplicate);
 
       const uploadGenerated = await uploadUrlToCloudinary(
         generatedImageUrlFromReplicate,
