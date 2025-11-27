@@ -569,7 +569,21 @@ Si el producto es un cuadro, colócalo en la pared de forma coherente.
         elapsedMs: Date.now() - startedAt
       });
 
-      return res.json(payload);
+     // ====================== RESPUESTA FINAL BACKEND 🔥 ======================
+return res.status(200).json({
+  ok: true,
+  status: "complete",
+  room_image: userImageUrl,
+  ai_image: generatedImageUrl,
+  product_url: productUrl || null,
+  product_name: effectiveProductName,
+  message,
+  analysis,
+  thumbnails,
+  embedding: productEmbedding || null,
+  created_at: new Date().toISOString()
+});
+
     } catch (err) {
       console.error("Error en /experiencia-premium:", err);
       return res.status(500).json({
