@@ -131,31 +131,6 @@ function buildThumbnails(publicId) {
   return { low, medium };
 }
 
-// Recorte PRO del producto (URL SIEMPRE HTTPS)
-async function createProductCutout(productImageUrl) {
-  const uploadRes = await uploadUrlToCloudinary(
-    productImageUrl,
-    "innotiva/products/raw",
-    "product-original"
-  );
-
-  // Recorte + calidad
-  const cutoutUrl = cloudinary.url(uploadRes.public_id, {
-    secure: true,
-    width: 1024,
-    height: 1024,
-    crop: "fill",
-    gravity: "auto",
-    quality: 90,
-    fetch_format: "auto"
-  });
-
-  return {
-    originalPublicId: uploadRes.public_id,
-    productCutoutUrl: cutoutUrl
-  };
-}
-
 // ================== SHOPIFY HELPER ==================
 
 async function fetchProductFromShopify(productId) {
@@ -206,92 +181,54 @@ async function fetchProductFromShopify(productId) {
 }
 
 // ================== OPENAI HELPERS ==================
+// 🔥 NUEVO: Vision analiza cuarto + producto en una sola llamada
+// Vision NO genera imagen, solo devuelve JSON para que FLUX genere con realismo
 
-// 1) Embedding visual del producto
-async function buildProductEmbedding(product, productCutoutUrl) {
-  const imageUrl = productCutoutUrl || product.featuredImage;
-  if (!imageUrl) return null;
-
-  logStep("OpenAI: embedding del producto", { title: product.title });
-
-  let base64Image;
-  try {
-    const imgRes = await fetch(imageUrl);
-    if (!imgRes.ok) {
-      console.error(
-        "[INNOTIVA] Error descargando imagen para embedding:",
-        imgRes.status,
-        imageUrl
-      );
-      return null;
-    }
-
-    const buffer = Buffer.from(await imgRes.arrayBuffer());
-    base64Image = `data:image/png;base64,${buffer.toString("base64")}`;
-  } catch (e) {
-    console.error("[INNOTIVA] Excepción descargando imagen para embedding:", e);
-    return null;
-  }
+async function analyzeRoomAndProduct({
+  roomImageUrl,
+  productImageUrl,
+  ideaText,
+  productName,
+  productType
+}) {
+  logStep("OpenAI: análisis de cuarto + producto");
 
   const prompt = `
-Analiza únicamente el producto que aparece en la imagen y devuélveme SOLO un JSON puro, sin texto extra.
-Estructura EXACTA:
+Analiza la habitación (room_image) y el producto (product_image) para integrar un
+CUADRO o una LÁMPARA minimalista premium en el espacio real del cliente.
 
-{
-  "colors": ["color1", "color2"],
-  "materials": ["material1", "material2"],
-  "texture": "descripción corta",
-  "pattern": "descripción corta"
-}
-`;
-
-  const response = await openai.responses.create({
-    model: "gpt-4.1-mini",
-    input: [
-      {
-        role: "user",
-        content: [
-          { type: "input_text", text: prompt },
-          { type: "input_image", image_url: base64Image }
-        ]
-      }
-    ]
-  });
-
-  const content = response.output?.[0]?.content || [];
-  const text = content
-    .filter((c) => c.type === "output_text")
-    .map((c) => c.text)
-    .join("\n")
-    .trim();
-
-  const embedding = safeParseJSON(text, "embedding");
-  return embedding;
-}
-
-// 2) Análisis del cuarto
-async function analyzeRoom({ roomImageUrl, ideaText }) {
-  logStep("OpenAI: análisis del cuarto");
-
-  const prompt = `
-Analiza la imagen del espacio del cliente.
-
-DEVUELVE ÚNICAMENTE un JSON PURO (sin texto extra) con esta estructura EXACTA:
+DEVUELVE EXCLUSIVAMENTE un JSON PURO con esta estructura EXACTA:
 
 {
   "imageWidth": number,
   "imageHeight": number,
-  "roomStyle": "texto",
+  "roomStyle": "texto corto (ej: minimalista cálido, nórdico limpio, etc.)",
   "placement": { "x": number, "y": number, "width": number, "height": number },
-  "finalPlacement": { "x": number, "y": number, "width": number, "height": number }
+  "finalPlacement": { "x": number, "y": number, "width": number, "height": number },
+  "product": {
+    "normalizedType": "cuadro" | "lampara" | "otro",
+    "rawTypeHint": "texto",
+    "colors": ["#hex", "#hex"],
+    "materials": ["madera", "metal", "tela", "vidrio"],
+    "texture": "descripción breve del acabado",
+    "finish": "mate/satinado/brillante"
+  }
 }
 
-Instrucciones IMPORTANTES:
-- "imageWidth" e "imageHeight" deben ser aproximaciones numéricas del tamaño de la imagen.
-- "placement" es una zona rectangular ideal donde colocar el producto.
-- "finalPlacement" es la misma zona, ajustada si fuera necesario.
-- TODOS los campos x, y, width, height DEBEN ser NÚMEROS (sin texto).
-- Considera la idea del cliente (si existe): "${ideaText || ""}".
+Instrucciones:
+- "imageWidth" y "imageHeight" deben ser aproximaciones numéricas del tamaño de la imagen de la habitación.
+- "placement" es una zona ideal aproximada donde colocar el producto.
+- "finalPlacement" puede ajustar ligeramente "placement" si ves una posición más lógica.
+- Todos los campos x, y, width, height DEBEN ser números.
+- Usa como contexto la siguiente intención del cliente (si existe):
+  "${ideaText || ""}"
+- Ten en cuenta el tipo de producto declarado:
+  "${productType || "desconocido"}" y el nombre comercial:
+  "${productName || "producto"}".
+
+NO GENERES TEXTO FUERA DEL JSON.
+NO EXPLIQUES NADA.
+DEVUELVE SOLO EL JSON.
 `;
 
   const response = await openai.responses.create({
@@ -301,7 +238,8 @@ Instrucciones IMPORTANTES:
         role: "user",
         content: [
           { type: "input_text", text: prompt },
-          { type: "input_image", image_url: roomImageUrl }
+          { type: "input_image", image_url: roomImageUrl },
+          { type: "input_image", image_url: productImageUrl }
         ]
       }
     ]
@@ -314,8 +252,9 @@ Instrucciones IMPORTANTES:
     .join("\n")
     .trim();
 
-  let analysis = safeParseJSON(text, "análisis de cuarto");
+  let analysis = safeParseJSON(text, "analysis room+product");
 
+  // Fallback si viene incompleto
   if (
     !analysis ||
     !analysis.finalPlacement ||
@@ -335,7 +274,27 @@ Instrucciones IMPORTANTES:
       imageHeight,
       roomStyle: analysis?.roomStyle || "tu espacio",
       placement: { x, y, width: boxWidth, height: boxHeight },
-      finalPlacement: { x, y, width: boxWidth, height: boxHeight }
+      finalPlacement: { x, y, width: boxWidth, height: boxHeight },
+      product: analysis?.product || {
+        normalizedType: "otro",
+        rawTypeHint: productType || "",
+        colors: [],
+        materials: [],
+        texture: "",
+        finish: ""
+      }
+    };
+  }
+
+  // Normalizar product
+  if (!analysis.product) {
+    analysis.product = {
+      normalizedType: "otro",
+      rawTypeHint: productType || "",
+      colors: [],
+      materials: [],
+      texture: "",
+      finish: ""
     };
   }
 
@@ -432,64 +391,6 @@ async function createMaskFromAnalysis(analysis) {
   return pngBuffer.toString("base64");
 }
 
-// ===================================================
-//  🔥 FLUX-FILL-DEV — con fallback (NO usado ahora, pero lo dejamos por si)
-// ===================================================
-
-async function generateWithFlux({ roomImageUrl, maskBase64, prompt }) {
-  const maskDataUrl = `data:image/png;base64,${maskBase64}`;
-
-  const configs = [
-    { steps: 28, mp: "match_input", guidance: 4.0 },
-    { steps: 24, mp: "1", guidance: 5.5 },
-    { steps: 20, mp: "0.7", guidance: 7.0 }
-  ];
-
-  for (const cfg of configs) {
-    try {
-      logStep("🧩 Enviando a FLUX", cfg);
-
-      const createRes = await fetch(
-        `https://api.replicate.com/v1/models/${encodeURIComponent(
-          REPLICATE_MODEL_SLUG
-        )}/predictions`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${REPLICATE_API_TOKEN}`,
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({
-            input: {
-              image: roomImageUrl,
-              mask: maskDataUrl,
-              prompt,
-              guidance: cfg.guidance,
-              num_inference_steps: cfg.steps,
-              output_format: "webp",
-              output_quality: 99,
-              megapixels: cfg.mp
-            }
-          })
-        }
-      );
-
-      const prediction = await createRes.json();
-
-      if (prediction?.output?.[0]) {
-        console.log("🟢 Resultado final FLUX:", prediction.output[0]);
-        return prediction.output[0];
-      } else {
-        console.error("⛔ FLUX sin output en config", cfg, prediction);
-      }
-    } catch (e) {
-      console.error("Error llamando FLUX en config", cfg, e);
-    }
-  }
-
-  throw new Error("Flux-fill-dev no devolvió imagen en ningún intento");
-}
-
 // ================== COPY EMOCIONAL ==================
 
 function buildEmotionalCopy({ roomStyle, productName, idea }) {
@@ -514,7 +415,7 @@ function buildEmotionalCopy({ roomStyle, productName, idea }) {
 
 app.post(
   "/experiencia-premium",
-  upload.single("roomImage"), // campo EXACTO del formulario
+  upload.single("roomImage"), // ⚠️ se respeta el nombre ORIGINAL del campo
   async (req, res) => {
     const startedAt = Date.now();
 
@@ -556,37 +457,21 @@ app.post(
       const effectiveProductName =
         productName || productData.title || "tu producto";
 
-      // 3) Recorte PRO del producto (https)
-      let productCutoutUrl = productData.featuredImage || null;
-      try {
-        if (productData.featuredImage) {
-          const cutout = await createProductCutout(productData.featuredImage);
-          productCutoutUrl = cutout.productCutoutUrl;
-          logStep("Producto recortado", { productCutoutUrl });
-        }
-      } catch (e) {
-        console.error("Error recortando producto, usando imagen original:", e);
+      const productImageUrl = productData.featuredImage;
+      if (!productImageUrl) {
+        throw new Error("El producto no tiene imagen en Shopify");
       }
 
-      // 4) Embedding visual (no rompe si falla)
-      let productEmbedding = null;
-      try {
-        productEmbedding = await buildProductEmbedding(
-          productData,
-          productCutoutUrl
-        );
-      } catch (e) {
-        console.error("Error en buildProductEmbedding, sigo sin embedding:", e);
-      }
-
-      // 5) Análisis del cuarto
-      const analysis = await analyzeRoom({
+      // 3) Análisis único con Vision (cuarto + producto)
+      const analysis = await analyzeRoomAndProduct({
         roomImageUrl: userImageUrl,
-        ideaText: idea
+        productImageUrl,
+        ideaText: idea,
+        productName: effectiveProductName,
+        productType: productData.productType
       });
 
-      // ====================== 6) Ajustar placement + crear máscara ====================== //
-
+      // 4) Ajustar placement según tipo de producto + idea del cliente
       const refinedPlacement = determineMaskPosition(
         analysis,
         productData.productType,
@@ -598,212 +483,142 @@ app.post(
       const maskBase64 = await createMaskFromAnalysis(analysis);
       logStep("Máscara generada correctamente");
 
-      // ====================== 7) PROMPT MEGA-ENRIQUECIDO PARA FLUX ====================== //
+      // ====================== PROMPT NUEVO ENFOCADO CUADROS/LÁMPARAS ====================== //
 
-      // Contexto visual del producto (si existe embedding)
-      const visual = productEmbedding
+      const rawType = productData.productType || "";
+      const normalizedType =
+        analysis.product?.normalizedType ||
+        (/(lámpara|lampara|lamp|ceiling|techo|pendant)/i.test(rawType)
+          ? "lampara"
+          : "cuadro");
+
+      const productVisualBlock = analysis.product
         ? `
-[DATOS VISUALES DEL PRODUCTO]
-- Colores predominantes reales: ${(productEmbedding.colors || []).join(", ")}
-- Materiales principales: ${(productEmbedding.materials || []).join(", ")}
-- Textura percibida: ${productEmbedding.texture || "-"}
-- Patrón o diseño: ${productEmbedding.pattern || "-"}
+[DETALLES VISUALES DEL PRODUCTO]
+- Tipo normalizado: ${analysis.product.normalizedType}
+- Tipo original Shopify: ${analysis.product.rawTypeHint || rawType}
+- Colores aproximados: ${(analysis.product.colors || []).join(", ")}
+- Materiales: ${(analysis.product.materials || []).join(", ")}
+- Textura: ${analysis.product.texture || "-"}
+- Acabado: ${analysis.product.finish || "-"}
 `
         : `
-[DATOS VISUALES DEL PRODUCTO]
-No se proporcionó metadata visual detallada. Asume que es un producto físico real,
-con materiales creíbles y acabado natural (nada caricaturesco ni plástico exagerado).
+[DETALLES VISUALES DEL PRODUCTO]
+Sin metadata detallada. Asume acabados realistas y materiales coherentes
+con un producto físico premium (nada caricaturesco ni plástico exagerado).
 `;
 
-      // Contexto del espacio analizado
       const roomContext = `
 [CONTEXTO DEL ESPACIO]
-- Estilo aproximado del espacio: ${analysis.roomStyle || "interior neutro y habitable"}.
+- Estilo del espacio: ${analysis.roomStyle || "interior neutro y habitable"}.
 - Resolución estimada: ${analysis.imageWidth || "desconocido"} x ${
         analysis.imageHeight || "desconocido"
       } píxeles.
-- Zona reservada para el producto (máscara blanca), en coordenadas de la imagen:
-  • x: ${analysis.finalPlacement.x}
-  • y: ${analysis.finalPlacement.y}
-  • width: ${analysis.finalPlacement.width}
-  • height: ${analysis.finalPlacement.height}
+- Zona reservada para el producto (máscara blanca):
+  x: ${analysis.finalPlacement.x}
+  y: ${analysis.finalPlacement.y}
+  width: ${analysis.finalPlacement.width}
+  height: ${analysis.finalPlacement.height}
 `;
 
-      // Contexto de la idea del cliente (si existe)
       const ideaContext =
         idea && idea.trim().length > 0
           ? `
-[INTENCIÓN DEL CLIENTE]
-El cliente dejó esta indicación sobre cómo le gustaría ver el producto:
+[INTENCIÓN DEL CLIENTE — PRIORIDAD MÁXIMA]
 
 "${idea.trim()}"
 
-Debes respetar esta intención en posición, orientación y presencia del producto,
-siempre que no rompa las reglas de realismo físico y coherencia con la habitación.
+Debes priorizar esta intención por encima de cualquier decoración genérica,
+siempre respetando la física y el realismo visual del espacio.
 `
           : `
 [INTENCIÓN DEL CLIENTE]
-El cliente no dio instrucciones específicas. Optimiza posición y escala del producto
-para que se vea natural, armónico y aspiracional dentro del espacio.
+
+El cliente no agregó indicaciones específicas. Optimiza posición y escala
+para que el producto se vea natural, armónico y aspiracional.
 `;
 
-      // Comportamiento según el tipo de producto
-      const rawType = productData.productType || "";
-      const productTypeLower = rawType.toLowerCase();
+      const behaviorBlock =
+        normalizedType === "lampara"
+          ? `
+[COMPORTAMIENTO: LÁMPARA MINIMALISTA PREMIUM]
 
-      let productBehaviorBlock = `
-[COMPORTAMIENTO POR DEFECTO DEL PRODUCTO]
-No se reconoce una categoría específica. Trátalo como un objeto físico real:
-- Debe tener volumen creíble.
-- Debe "apoyarse" o "anclarse" a alguna superficie lógica (suelo, pared, techo, mueble).
-- Nunca debe flotar sin soporte.
-- Tamaño moderado, que tenga sentido en comparación con muebles y paredes visibles.
+- Debe estar conectada de forma lógica (techo, pared, mesa o piso).
+- La luz que emite es suave y coherente con la iluminación ya presente.
+- No inviertas toda la luz de la escena, solo complementa sutilmente.
+- Prohibido haces de luz exagerados o efectos irreales.
+`
+          : `
+[COMPORTAMIENTO: CUADRO / PIEZA DE ARTE EN PARED]
+
+- Debe montarse en la pared, con plano casi paralelo al de la pared.
+- Escala proporcional a cama, sofá o mueble cercano (nunca ridículamente grande o pequeña).
+- No debe flotar ni verse pegado como un collage plano.
+- Mantén el diseño del cuadro tal cual es, sin inventar detalles nuevos.
 `;
 
-      if (/(cuadro|lienzo|poster|marco|print|art)/i.test(rawType)) {
-        productBehaviorBlock = `
-[COMPORTAMIENTO: CUADRO / LIENZO / ARTE EN PARED]
-- Trátalo como una pieza de arte montada en la pared.
-- El plano del cuadro debe ser prácticamente paralelo al plano de la pared.
-- No debe sobresalir de forma absurda ni parecer pegado de forma plana de collage.
-- Escala sugerida: ancho visual entre 60–140 cm, en proporción con el sofá, cama o mueble cercano.
-- No generes marcos exagerados ni reflejos metálicos irreales.
-`;
-      } else if (
-        /(lámpara|lampara|ceiling|techo|aplique|colgante|pendant)/i.test(rawType)
-      ) {
-        productBehaviorBlock = `
-[COMPORTAMIENTO: LÁMPARA / ILUMINACIÓN]
-- Debe estar conectada lógicamente a techo o pared (jamás flotando sola en el aire).
-- La luz emitida debe ser coherente con la iluminación actual del cuarto.
-- No cambies toda la iluminación de la escena; solo añade aportes sutiles.
-- Prohibido crear haces de luz exagerados o efectos "fantasía".
-`;
-      } else if (
-        /(sofá|sofa|sillon|sillón|mueble|aparador|console|sideboard|rack|tv stand)/i.test(
-          rawType
-        )
-      ) {
-        productBehaviorBlock = `
-[COMPORTAMIENTO: MUEBLE / SOFÁ / APARADOR]
-- El producto debe apoyarse claramente sobre el suelo o sobre una base visible.
-- Debe respetar la perspectiva del suelo: líneas de fuga y horizontes coherentes.
-- Genera sombras físicas suaves en el suelo y pared cercana.
-- Escala razonable: nunca más grande que toda la pared ni más pequeño que un adorno.
-`;
-      } else if (
-        /(mesa|table|coffee table|dining|comedor|desk|escritorio)/i.test(rawType)
-      ) {
-        productBehaviorBlock = `
-[COMPORTAMIENTO: MESAS / SUPERFICIES]
-- Ubica la mesa en el piso, alineada con la geometría de la habitación.
-- Altura y proporciones coherentes con sofás, sillas u otros muebles.
-- No atravieses muebles existentes; si no hay espacio lógico, ajusta ligeramente
-  escala y posición dentro del área blanca para que se vea natural.
-`;
-      } else if (/(espejo|mirror)/i.test(rawType)) {
-        productBehaviorBlock = `
-[COMPORTAMIENTO: ESPEJO]
-- El espejo debe mostrarse con leve reflejo del ambiente, pero sin inventar personas ni escenas nuevas.
-- No muestres reflejos imposibles (por ejemplo, ángulos que no coinciden con la cámara).
-- Borde y marco coherentes con el estilo del espacio (minimalista, moderno, etc.).
-`;
-      } else if (
-        /(planta|plant|florero|flor|jarrón|jarron|vase)/i.test(rawType)
-      ) {
-        productBehaviorBlock = `
-[COMPORTAMIENTO: PLANTAS / FLOREROS]
-- Volumen orgánico, iluminación suave y sombras coherentes sobre suelo o mueble.
-- No invadas toda la escena con vegetación exagerada.
-- Mantén una densidad de hojas realista, sin ruido digital.
-`;
-      } else if (
-        /(decor|escultura|figura|ornamento|adorno|statue|figurine)/i.test(rawType)
-      ) {
-        productBehaviorBlock = `
-[COMPORTAMIENTO: DECORACIÓN PEQUEÑA]
-- Colocar sobre superficies planas (mesas, repisas, aparadores) dentro del área blanca.
-- Tamaño sugerido: entre 10–40 cm de alto (proporcional al contexto).
-- No debe tapar completamente otros elementos clave del espacio.
-`;
-      } else if (
-        /(parlante|bocina|soundbar|speaker|audio)/i.test(rawType)
-      ) {
-        productBehaviorBlock = `
-[COMPORTAMIENTO: TECNOLOGÍA / AUDIO]
-- Integrado en pared, mueble de TV o repisa, según el diseño del producto.
-- Bordes definidos, sin deformaciones ni artefactos.
-- Nada de efectos de luz "gaming" a menos que el diseño lo sugiera explícitamente.
-`;
-      }
-
-      // Construcción final del prompt hiper detallado
       const prompt = `
 Eres un MODELO DE INPAINTING FOTOGRÁFICO de alta fidelidad.
 
-Tu objetivo es SIMULAR que el producto **${effectiveProductName}**
-YA EXISTE en la habitación real del cliente. Debe parecer una foto real,
-no una ilustración ni un render 3D.
+Tu objetivo es integrar el producto **${effectiveProductName}**
+en la habitación REAL del cliente para que parezca UNA FOTO auténtica,
+lista para venderse en un catálogo premium de decoración.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-BLOQUE 1 — REGLA SUPREMA (MÁXIMA PRIORIDAD)
-- SOLO puedes modificar los píxeles dentro del área blanca de la MÁSCARA.
-- El resto de la imagen (paredes, muebles, suelo, iluminación general)
-  debe mantenerse prácticamente idéntico al original.
-- No cambies el encuadre de cámara, ni la perspectiva global, ni la estructura del cuarto.
+REGLA SUPREMA (MÁXIMA PRIORIDAD)
+
+- SOLO puedes modificar los píxeles dentro del área blanca de la máscara.
+- El resto de la habitación (muebles, paredes, suelo, luz general)
+  debe mantenerse prácticamente igual al original.
+- No cambies el encuadre de cámara ni la perspectiva global.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-BLOQUE 2 — CONTEXTO DEL ESPACIO
-${roomContext}
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-BLOQUE 3 — INTENCIÓN DEL CLIENTE
+INTENCIÓN DEL CLIENTE (PESO MÁS ALTO)
 ${ideaContext}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-BLOQUE 4 — CÓMO DEBE COMPORTARSE ESTE PRODUCTO EN EL MUNDO REAL
-Tipo original de producto (Shopify): "${rawType || "generic"}"
-
-${productBehaviorBlock}
+ESCENARIO DEL ESPACIO
+${roomContext}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-BLOQUE 5 — ASPECTO VISUAL Y MATERIALES DEL PRODUCTO
-${visual}
+PRODUCTO A INTEGRAR — CUADRO / LÁMPARA
+${behaviorBlock}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-BLOQUE 6 — GUÍAS DE REALISMO FOTOGRÁFICO
+APARIENCIA Y MATERIALES
+${productVisualBlock}
 
-Debes garantizar que:
-1. El producto respete la perspectiva de la habitación y las líneas de fuga.
-2. Las sombras del producto coincidan con la dirección e intensidad de la luz del cuarto.
-3. Los materiales reflejen la luz de forma creíble (mate, satinado, metálico, tela, madera, etc.).
-4. No aparezcan bordes recortados, halos blancos, ruido fuerte ni artefactos raros.
-5. La escala del producto sea creíble frente a puertas, camas, sofás, mesas y otros muebles.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+GUÍAS DE REALISMO
+
+1. El producto respeta la perspectiva de la habitación.
+2. Sombras coherentes con la dirección e intensidad de la luz real.
+3. Materiales con respuesta de luz creíble (madera, metal, tela, vidrio, etc.).
+4. Sin halos, bordes recortados ni ruido fuerte de IA.
+5. Escala lógica respecto a puertas, camas, sofás y mesas.
 
 Prohibido:
 - Regenerar toda la habitación.
-- Cambiar completamente el color de las paredes.
-- Añadir textos, logos o marcas de agua visibles.
-- Introducir personas, animales u objetos que el cliente no pidió.
+- Cambiar el color global de paredes o muebles.
+- Añadir objetos nuevos no mencionados por el cliente.
+- Introducir personas, animales o elementos fantasiosos.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-BLOQUE 7 — OBJETIVO FINAL
+OBJETIVO FINAL
 
-Genera UNA sola imagen final donde:
-- El producto **${effectiveProductName}** esté perfectamente integrado en el área blanca.
-- El entorno conserve su esencia original (estilo, composición, iluminación).
-- El resultado sea tan realista que parezca una fotografía tomada con cámara profesional
-  en el mismo espacio del cliente.
-
-Tu misión es ayudar al cliente a visualizar cómo quedaría el producto en su propio entorno
-ANTES de tomar la decisión de compra.
+Genera UNA sola imagen donde el producto **${effectiveProductName}**
+quede perfectamente integrado dentro del área blanca de la máscara,
+pareciendo parte original del espacio del cliente.
 `;
 
-      // 8) FLUX SAFE MODE — UNA SOLA GENERACIÓN CON POLLING
+      // ====================== FLUX SAFE MODE (UNA SOLA GENERACIÓN) ====================== //
+
       logStep("🧩 Llamando a FLUX (safe mode)...");
 
       const fluxReq = await fetch(
-        "https://api.replicate.com/v1/models/black-forest-labs/flux-fill-dev/predictions",
+        `https://api.replicate.com/v1/models/${encodeURIComponent(
+          REPLICATE_MODEL_SLUG
+        )}/predictions`,
         {
           method: "POST",
           headers: {
@@ -819,7 +634,7 @@ ANTES de tomar la decisión de compra.
               num_inference_steps: 26,
               output_format: "webp",
               output_quality: 98,
-              megapixels: "1" // siempre permitido
+              megapixels: "1"
             }
           })
         }
@@ -887,7 +702,7 @@ ANTES de tomar la decisión de compra.
         elapsedMs: Date.now() - startedAt
       });
 
-      // 12) Respuesta final
+      // 12) Respuesta final (mantengo keys originales)
       return res.status(200).json({
         ok: true,
         status: "complete",
@@ -896,12 +711,12 @@ ANTES de tomar la decisión de compra.
         ai_image: generatedImageUrl,
         product_url: productUrl || null,
         product_name: effectiveProductName,
-        // 👇 agregado para poder usarlo luego en reposición si quieres
         product_id: productId,
         message,
         analysis,
         thumbnails,
-        embedding: productEmbedding || null,
+        // mantenemos la key "embedding" pero ahora contiene análisis del producto
+        embedding: analysis.product || null,
         created_at: new Date().toISOString()
       });
     } catch (err) {
@@ -916,7 +731,7 @@ ANTES de tomar la decisión de compra.
 );
 
 // ================== 🔥 RUTA REPOSICIÓN IA ESTABLE 🔥 ==================
-// No usa Cloudinary Resources, no expira, siempre usa URL pública segura
+// Mantengo firma y lógica original
 
 app.post("/experiencia-premium-reposicion", async (req, res) => {
   try {
@@ -938,10 +753,18 @@ app.post("/experiencia-premium-reposicion", async (req, res) => {
 
     logStep("♻ Reposición manual iniciada", { x, y, width, height });
 
-    // 🔥 Aquí decidimos qué imagen se usa como base:
     const imageToUse = ai_image_prev && ai_image_prev !== "" 
       ? ai_image_prev        // si ya hay versión anterior → usamos esa
       : roomImage;           // si es la primera reposición → usar original
+
+    // Para enriquecer un poco el prompt, obtenemos tipo de producto (no es crítico)
+    let productTypeHint = "producto decorativo";
+    try {
+      const p = await fetchProductFromShopify(productId);
+      productTypeHint = p.productType || productTypeHint;
+    } catch (e) {
+      console.error("No se pudo obtener productType en reposición:", e);
+    }
 
     // ================= 🚀 REGENERAR MÁSCARA =================
     const placement = {
@@ -960,10 +783,9 @@ app.post("/experiencia-premium-reposicion", async (req, res) => {
 
     // ================= IA GENERA V2 =================
     const miniPrompt = `
-Reubica el producto sin alterar el resto de la habitación.
-Solo edita la zona blanca.
-Producto: ${productId}
-Idea: ${idea || "reposicion manual"}
+Reubica el ${productTypeHint} sin alterar el resto de la habitación.
+Solo edita la zona blanca de la máscara.
+Intención del cliente: "${idea || "reposicion manual"}"
 `;
 
     const flux = await fetch(
@@ -998,7 +820,6 @@ Idea: ${idea || "reposicion manual"}
 
     if (!poll.output?.[0]) throw new Error("Replicate no devolvió imagen nueva");
 
-    // ================= Guardar versión mejorada en Cloudinary =================
     const upload = await uploadUrlToCloudinary(
       poll.output[0],
       "innotiva/repositions",
@@ -1009,7 +830,7 @@ Idea: ${idea || "reposicion manual"}
 
     return res.json({
       ok: true,
-      ai_image: upload.secure_url,  // esta será la nueva que muestres
+      ai_image: upload.secure_url,
       base_used: imageToUse,
       updated_at: new Date().toISOString()
     });
