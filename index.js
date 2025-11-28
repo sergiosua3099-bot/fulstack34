@@ -341,6 +341,7 @@ Instrucciones IMPORTANTES:
 
   return analysis;
 }
+
 // ============ POSICIÓN DE LA MÁSCARA SEGÚN PRODUCTO + IDEA ============
 
 function determineMaskPosition(analysis, productType = "", ideaText = "") {
@@ -508,6 +509,7 @@ function buildEmotionalCopy({ roomStyle, productName, idea }) {
 
   return msg;
 }
+
 // ================== ENDPOINT PRINCIPAL ==================
 
 app.post(
@@ -583,44 +585,43 @@ app.post(
         ideaText: idea
       });
 
-     // ====================== 6) Ajustar placement + crear máscara ====================== //
+      // ====================== 6) Ajustar placement + crear máscara ====================== //
 
-const refinedPlacement = determineMaskPosition(
-  analysis,
-  productData.productType,
-  idea
-);
-analysis.finalPlacement = refinedPlacement;
+      const refinedPlacement = determineMaskPosition(
+        analysis,
+        productData.productType,
+        idea
+      );
+      analysis.finalPlacement = refinedPlacement;
 
-logStep("Generando máscara...");
-const maskBase64 = await createMaskFromAnalysis(analysis);
-logStep("Máscara generada correctamente");
+      logStep("Generando máscara...");
+      const maskBase64 = await createMaskFromAnalysis(analysis);
+      logStep("Máscara generada correctamente");
 
+      // ====================== 7) PROMPT MEGA-ENRIQUECIDO PARA FLUX ====================== //
 
-// ====================== 7) PROMPT MEGA-ENRIQUECIDO PARA FLUX ====================== //
-
-// Contexto visual del producto (si existe embedding)
-const visual = productEmbedding
-  ? `
+      // Contexto visual del producto (si existe embedding)
+      const visual = productEmbedding
+        ? `
 [DATOS VISUALES DEL PRODUCTO]
 - Colores predominantes reales: ${(productEmbedding.colors || []).join(", ")}
 - Materiales principales: ${(productEmbedding.materials || []).join(", ")}
 - Textura percibida: ${productEmbedding.texture || "-"}
 - Patrón o diseño: ${productEmbedding.pattern || "-"}
 `
-  : `
+        : `
 [DATOS VISUALES DEL PRODUCTO]
 No se proporcionó metadata visual detallada. Asume que es un producto físico real,
 con materiales creíbles y acabado natural (nada caricaturesco ni plástico exagerado).
 `;
 
-// Contexto del espacio analizado
-const roomContext = `
+      // Contexto del espacio analizado
+      const roomContext = `
 [CONTEXTO DEL ESPACIO]
 - Estilo aproximado del espacio: ${analysis.roomStyle || "interior neutro y habitable"}.
 - Resolución estimada: ${analysis.imageWidth || "desconocido"} x ${
-  analysis.imageHeight || "desconocido"
-} píxeles.
+        analysis.imageHeight || "desconocido"
+      } píxeles.
 - Zona reservada para el producto (máscara blanca), en coordenadas de la imagen:
   • x: ${analysis.finalPlacement.x}
   • y: ${analysis.finalPlacement.y}
@@ -628,10 +629,10 @@ const roomContext = `
   • height: ${analysis.finalPlacement.height}
 `;
 
-// Contexto de la idea del cliente (si existe)
-const ideaContext =
-  idea && idea.trim().length > 0
-    ? `
+      // Contexto de la idea del cliente (si existe)
+      const ideaContext =
+        idea && idea.trim().length > 0
+          ? `
 [INTENCIÓN DEL CLIENTE]
 El cliente dejó esta indicación sobre cómo le gustaría ver el producto:
 
@@ -640,17 +641,17 @@ El cliente dejó esta indicación sobre cómo le gustaría ver el producto:
 Debes respetar esta intención en posición, orientación y presencia del producto,
 siempre que no rompa las reglas de realismo físico y coherencia con la habitación.
 `
-    : `
+          : `
 [INTENCIÓN DEL CLIENTE]
 El cliente no dio instrucciones específicas. Optimiza posición y escala del producto
 para que se vea natural, armónico y aspiracional dentro del espacio.
 `;
 
-// Comportamiento según el tipo de producto
-const rawType = productData.productType || "";
-const productTypeLower = rawType.toLowerCase();
+      // Comportamiento según el tipo de producto
+      const rawType = productData.productType || "";
+      const productTypeLower = rawType.toLowerCase();
 
-let productBehaviorBlock = `
+      let productBehaviorBlock = `
 [COMPORTAMIENTO POR DEFECTO DEL PRODUCTO]
 No se reconoce una categoría específica. Trátalo como un objeto físico real:
 - Debe tener volumen creíble.
@@ -659,8 +660,8 @@ No se reconoce una categoría específica. Trátalo como un objeto físico real:
 - Tamaño moderado, que tenga sentido en comparación con muebles y paredes visibles.
 `;
 
-if (/(cuadro|lienzo|poster|marco|print|art)/i.test(rawType)) {
-  productBehaviorBlock = `
+      if (/(cuadro|lienzo|poster|marco|print|art)/i.test(rawType)) {
+        productBehaviorBlock = `
 [COMPORTAMIENTO: CUADRO / LIENZO / ARTE EN PARED]
 - Trátalo como una pieza de arte montada en la pared.
 - El plano del cuadro debe ser prácticamente paralelo al plano de la pared.
@@ -668,62 +669,76 @@ if (/(cuadro|lienzo|poster|marco|print|art)/i.test(rawType)) {
 - Escala sugerida: ancho visual entre 60–140 cm, en proporción con el sofá, cama o mueble cercano.
 - No generes marcos exagerados ni reflejos metálicos irreales.
 `;
-} else if (/(lámpara|lampara|ceiling|techo|aplique|colgante|pendant)/i.test(rawType)) {
-  productBehaviorBlock = `
+      } else if (
+        /(lámpara|lampara|ceiling|techo|aplique|colgante|pendant)/i.test(rawType)
+      ) {
+        productBehaviorBlock = `
 [COMPORTAMIENTO: LÁMPARA / ILUMINACIÓN]
 - Debe estar conectada lógicamente a techo o pared (jamás flotando sola en el aire).
 - La luz emitida debe ser coherente con la iluminación actual del cuarto.
 - No cambies toda la iluminación de la escena; solo añade aportes sutiles.
 - Prohibido crear haces de luz exagerados o efectos "fantasía".
 `;
-} else if (/(sofá|sofa|sillon|sillón|mueble|aparador|console|sideboard|rack|tv stand)/i.test(rawType)) {
-  productBehaviorBlock = `
+      } else if (
+        /(sofá|sofa|sillon|sillón|mueble|aparador|console|sideboard|rack|tv stand)/i.test(
+          rawType
+        )
+      ) {
+        productBehaviorBlock = `
 [COMPORTAMIENTO: MUEBLE / SOFÁ / APARADOR]
 - El producto debe apoyarse claramente sobre el suelo o sobre una base visible.
 - Debe respetar la perspectiva del suelo: líneas de fuga y horizontes coherentes.
 - Genera sombras físicas suaves en el suelo y pared cercana.
 - Escala razonable: nunca más grande que toda la pared ni más pequeño que un adorno.
 `;
-} else if (/(mesa|table|coffee table|dining|comedor|desk|escritorio)/i.test(rawType)) {
-  productBehaviorBlock = `
+      } else if (
+        /(mesa|table|coffee table|dining|comedor|desk|escritorio)/i.test(rawType)
+      ) {
+        productBehaviorBlock = `
 [COMPORTAMIENTO: MESAS / SUPERFICIES]
 - Ubica la mesa en el piso, alineada con la geometría de la habitación.
 - Altura y proporciones coherentes con sofás, sillas u otros muebles.
 - No atravieses muebles existentes; si no hay espacio lógico, ajusta ligeramente
   escala y posición dentro del área blanca para que se vea natural.
 `;
-} else if (/(espejo|mirror)/i.test(rawType)) {
-  productBehaviorBlock = `
+      } else if (/(espejo|mirror)/i.test(rawType)) {
+        productBehaviorBlock = `
 [COMPORTAMIENTO: ESPEJO]
 - El espejo debe mostrarse con leve reflejo del ambiente, pero sin inventar personas ni escenas nuevas.
 - No muestres reflejos imposibles (por ejemplo, ángulos que no coinciden con la cámara).
 - Borde y marco coherentes con el estilo del espacio (minimalista, moderno, etc.).
 `;
-} else if (/(planta|plant|florero|flor|jarrón|jarron|vase)/i.test(rawType)) {
-  productBehaviorBlock = `
+      } else if (
+        /(planta|plant|florero|flor|jarrón|jarron|vase)/i.test(rawType)
+      ) {
+        productBehaviorBlock = `
 [COMPORTAMIENTO: PLANTAS / FLOREROS]
 - Volumen orgánico, iluminación suave y sombras coherentes sobre suelo o mueble.
 - No invadas toda la escena con vegetación exagerada.
 - Mantén una densidad de hojas realista, sin ruido digital.
 `;
-} else if (/(decor|escultura|figura|ornamento|adorno|statue|figurine)/i.test(rawType)) {
-  productBehaviorBlock = `
+      } else if (
+        /(decor|escultura|figura|ornamento|adorno|statue|figurine)/i.test(rawType)
+      ) {
+        productBehaviorBlock = `
 [COMPORTAMIENTO: DECORACIÓN PEQUEÑA]
 - Colocar sobre superficies planas (mesas, repisas, aparadores) dentro del área blanca.
 - Tamaño sugerido: entre 10–40 cm de alto (proporcional al contexto).
 - No debe tapar completamente otros elementos clave del espacio.
 `;
-} else if (/(parlante|bocina|soundbar|speaker|audio)/i.test(rawType)) {
-  productBehaviorBlock = `
+      } else if (
+        /(parlante|bocina|soundbar|speaker|audio)/i.test(rawType)
+      ) {
+        productBehaviorBlock = `
 [COMPORTAMIENTO: TECNOLOGÍA / AUDIO]
 - Integrado en pared, mueble de TV o repisa, según el diseño del producto.
 - Bordes definidos, sin deformaciones ni artefactos.
 - Nada de efectos de luz "gaming" a menos que el diseño lo sugiera explícitamente.
 `;
-}
+      }
 
-// Construcción final del prompt hiper detallado
-const prompt = `
+      // Construcción final del prompt hiper detallado
+      const prompt = `
 Eres un MODELO DE INPAINTING FOTOGRÁFICO de alta fidelidad.
 
 Tu objetivo es SIMULAR que el producto **${effectiveProductName}**
@@ -783,7 +798,6 @@ Genera UNA sola imagen final donde:
 Tu misión es ayudar al cliente a visualizar cómo quedaría el producto en su propio entorno
 ANTES de tomar la decisión de compra.
 `;
-
 
       // 8) FLUX SAFE MODE — UNA SOLA GENERACIÓN CON POLLING
       logStep("🧩 Llamando a FLUX (safe mode)...");
@@ -882,6 +896,8 @@ ANTES de tomar la decisión de compra.
         ai_image: generatedImageUrl,
         product_url: productUrl || null,
         product_name: effectiveProductName,
+        // 👇 agregado para poder usarlo luego en reposición si quieres
+        product_id: productId,
         message,
         analysis,
         thumbnails,
@@ -899,15 +915,18 @@ ANTES de tomar la decisión de compra.
   }
 );
 
-     // ================== NUEVA RUTA: REPOSICIÓN MANUAL ==================
+// ================== NUEVA RUTA: REPOSICIÓN MANUAL ==================
 // ⚠ No elimina nada del flujo anterior. Solo re-usa tu imagen + producto.
 
 app.post("/experiencia-premium-reposicion", async (req, res) => {
   try {
     const { roomImage, productId, x, y, width, height, idea } = req.body;
 
-    if (!roomImage || !productId || !x || !y) {
-      return res.status(400).json({ error: "Faltan datos para reposición manual." });
+    // x / y pueden ser 0, así que solo valido null/undefined
+    if (!roomImage || !productId || x == null || y == null) {
+      return res
+        .status(400)
+        .json({ error: "Faltan datos para reposición manual." });
     }
 
     logStep("♻ Reposición manual IA iniciada", { x, y });
@@ -986,13 +1005,11 @@ Idea del cliente: "${idea || "reposicion-manual"}"
       ai_image: newImg.secure_url,
       updated_at: new Date().toISOString()
     });
-
   } catch (e) {
     console.error("Error en /experiencia-premium-reposicion", e);
     res.status(500).json({ error: "No se pudo reposicionar la imagen." });
   }
 });
-
 
 // ================== 🚀 ARRANQUE DEL SERVIDOR ==================
 
