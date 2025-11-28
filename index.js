@@ -915,51 +915,59 @@ ANTES de tomar la decisión de compra.
   }
 );
 
-// ================== NUEVA RUTA: REPOSICIÓN MANUAL ==================
-// ⚠ No elimina nada del flujo anterior. Solo re-usa tu imagen + producto.
-
+// ================== RUTA CORREGIDA 🔥 — REPOSICIÓN MANUAL ==================
 app.post("/experiencia-premium-reposicion", async (req, res) => {
   try {
-    const { roomImage, productId, x, y, width, height, idea } = req.body;
+    let { roomImage, productId, x, y, width, height, idea } = req.body;
 
-    // x / y pueden ser 0, así que solo valido null/undefined
-    if (!roomImage || !productId || x == null || y == null) {
-      return res
-        .status(400)
-        .json({ error: "Faltan datos para reposición manual." });
+    // Convertir valores a número (evita undefined/string)
+    x = Number(x);
+    y = Number(y);
+    width = Number(width);
+    height = Number(height);
+
+    // Validación fuerte
+    if (!roomImage || !productId || isNaN(x) || isNaN(y)) {
+      return res.status(400).json({ error: "Faltan datos para reposición manual." });
     }
 
-    logStep("♻ Reposición manual IA iniciada", { x, y });
+    // Si no llegan width/height, los obtenemos directamente de Cloudinary 😎
+    if (!width || !height) {
+      const probe = await cloudinary.api.resource(roomImage.replace(/^.*\/upload\//, ''));  
+      width = probe.width;
+      height = probe.height;
+      console.log("📏 Dimensiones auto-detectadas →", width, height);
+    }
 
-    // 1) Traemos info del producto Shopify (mantiene mismo producto original)
+    logStep("♻ Reposición manual IA iniciada", { x, y, width, height });
+
+    // Producto Shopify (mantiene fidelidad visual)
     const productData = await fetchProductFromShopify(productId);
 
-    // 2) Crear máscara SOLO con el nuevo punto del usuario
+    // Nueva máscara en rectángulo basado en click del cliente
     const analysis = {
       imageWidth: width,
       imageHeight: height,
       finalPlacement: {
-        x: Math.floor(x - width * 0.12),
-        y: Math.floor(y - height * 0.12),
-        width: Math.floor(width * 0.24),
-        height: Math.floor(height * 0.24)
+        x: Math.floor(x - width * 0.10),
+        y: Math.floor(y - height * 0.10),
+        width: Math.floor(width * 0.22),
+        height: Math.floor(height * 0.22)
       }
     };
 
     const maskBase64 = await createMaskFromAnalysis(analysis);
-    logStep("🟡 Nueva máscara generada por click");
 
-    // 3) Prompt reducido — no reconstruimos todo, solo recolocamos
+    // Mini-prompt rápido (reposiciona sin regenerar la habitación)
     const miniPrompt = `
-Simula que el producto continúa siendo parte de la misma escena original.
-Solo modifica el área blanca exacta para reubicarlo en la posición marcada.
-Nada más debe cambiar.
+Reubica el producto manteniendo la escena original.
+Solo modifica el área blanca marcada. Nada más cambia.
 
 Producto: ${productData.title}
-Idea del cliente: "${idea || "reposicion-manual"}"
+Idea: ${idea || "Reubicación manual del cliente"}
 `;
 
-    // 4) Generar nuevo resultado rápido FLUX
+    // IA V2 — Mucho más rápida que la primera generación
     const flux = await fetch(
       "https://api.replicate.com/v1/models/black-forest-labs/flux-fill-dev/predictions",
       {
@@ -973,10 +981,10 @@ Idea del cliente: "${idea || "reposicion-manual"}"
             image: roomImage,
             mask: `data:image/png;base64,${maskBase64}`,
             prompt: miniPrompt,
-            guidance: 4.2,
+            guidance: 4.5,
             num_inference_steps: 18,
-            output_format: "webp",
-            megapixels: "1"
+            megapixels:"1",
+            output_format:"webp"
           }
         })
       }
@@ -984,15 +992,14 @@ Idea del cliente: "${idea || "reposicion-manual"}"
 
     let poll = await flux.json();
     while (poll.status !== "succeeded" && poll.status !== "failed") {
-      await new Promise((r) => setTimeout(r, 2000));
-      const next = await fetch(
+      await new Promise(r => setTimeout(r, 2000));
+      poll = await (await fetch(
         `https://api.replicate.com/v1/predictions/${poll.id}`,
-        { headers: { Authorization: `Bearer ${REPLICATE_API_TOKEN}` } }
-      );
-      poll = await next.json();
+        { headers:{Authorization:`Bearer ${REPLICATE_API_TOKEN}`} }
+      )).json();
     }
 
-    if (!poll.output?.[0]) throw new Error("No hubo imagen nueva.");
+    if (!poll.output?.[0]) throw new Error("No hubo imagen nueva generada.");
 
     const newImg = await uploadUrlToCloudinary(
       poll.output[0],
@@ -1000,16 +1007,14 @@ Idea del cliente: "${idea || "reposicion-manual"}"
       "room-repositioned"
     );
 
-    return res.json({
-      ok: true,
-      ai_image: newImg.secure_url,
-      updated_at: new Date().toISOString()
-    });
-  } catch (e) {
-    console.error("Error en /experiencia-premium-reposicion", e);
-    res.status(500).json({ error: "No se pudo reposicionar la imagen." });
+    return res.json({ ok:true, ai_image:newImg.secure_url });
+
+  } catch(e){
+    console.error("❌ Reposición V2 error:", e);
+    res.status(500).json({ error:"Error generando reposición IA." });
   }
 });
+
 
 // ================== 🚀 ARRANQUE DEL SERVIDOR ==================
 
