@@ -899,6 +899,101 @@ ANTES de tomar la decisión de compra.
   }
 );
 
+     // ================== NUEVA RUTA: REPOSICIÓN MANUAL ==================
+// ⚠ No elimina nada del flujo anterior. Solo re-usa tu imagen + producto.
+
+app.post("/experiencia-premium-reposicion", async (req, res) => {
+  try {
+    const { roomImage, productId, x, y, width, height, idea } = req.body;
+
+    if (!roomImage || !productId || !x || !y) {
+      return res.status(400).json({ error: "Faltan datos para reposición manual." });
+    }
+
+    logStep("♻ Reposición manual IA iniciada", { x, y });
+
+    // 1) Traemos info del producto Shopify (mantiene mismo producto original)
+    const productData = await fetchProductFromShopify(productId);
+
+    // 2) Crear máscara SOLO con el nuevo punto del usuario
+    const analysis = {
+      imageWidth: width,
+      imageHeight: height,
+      finalPlacement: {
+        x: Math.floor(x - width * 0.12),
+        y: Math.floor(y - height * 0.12),
+        width: Math.floor(width * 0.24),
+        height: Math.floor(height * 0.24)
+      }
+    };
+
+    const maskBase64 = await createMaskFromAnalysis(analysis);
+    logStep("🟡 Nueva máscara generada por click");
+
+    // 3) Prompt reducido — no reconstruimos todo, solo recolocamos
+    const miniPrompt = `
+Simula que el producto continúa siendo parte de la misma escena original.
+Solo modifica el área blanca exacta para reubicarlo en la posición marcada.
+Nada más debe cambiar.
+
+Producto: ${productData.title}
+Idea del cliente: "${idea || "reposicion-manual"}"
+`;
+
+    // 4) Generar nuevo resultado rápido FLUX
+    const flux = await fetch(
+      "https://api.replicate.com/v1/models/black-forest-labs/flux-fill-dev/predictions",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${REPLICATE_API_TOKEN}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          input: {
+            image: roomImage,
+            mask: `data:image/png;base64,${maskBase64}`,
+            prompt: miniPrompt,
+            guidance: 4.2,
+            num_inference_steps: 18,
+            output_format: "webp",
+            megapixels: "1"
+          }
+        })
+      }
+    );
+
+    let poll = await flux.json();
+    while (poll.status !== "succeeded" && poll.status !== "failed") {
+      await new Promise((r) => setTimeout(r, 2000));
+      const next = await fetch(
+        `https://api.replicate.com/v1/predictions/${poll.id}`,
+        { headers: { Authorization: `Bearer ${REPLICATE_API_TOKEN}` } }
+      );
+      poll = await next.json();
+    }
+
+    if (!poll.output?.[0]) throw new Error("No hubo imagen nueva.");
+
+    const newImg = await uploadUrlToCloudinary(
+      poll.output[0],
+      "innotiva/manual-reposition",
+      "room-repositioned"
+    );
+
+    return res.json({
+      ok: true,
+      ai_image: newImg.secure_url,
+      updated_at: new Date().toISOString()
+    });
+
+  } catch (e) {
+    console.error("Error en /experiencia-premium-reposicion", e);
+    res.status(500).json({ error: "No se pudo reposicionar la imagen." });
+  }
+});
+
+
 // ================== 🚀 ARRANQUE DEL SERVIDOR ==================
 
 app.listen(PORT, () => {
