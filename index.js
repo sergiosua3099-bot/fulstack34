@@ -1,5 +1,5 @@
 // index.js
-// INNOTIVA BACKEND PRO - /experiencia-premium - V20 ARQUITECTÓNICO D1 (máscara inicial + máscara reposición pro)
+// INNOTIVA BACKEND PRO - /experiencia-premium - V21 ARQUITECTÓNICO (C + D, máscara refinada)
 
 require("dotenv").config();
 const express = require("express");
@@ -306,13 +306,12 @@ async function analyzeRoomAndProduct({
   return analysis;
 }
 
-// ============ POSICIÓN DE LA MÁSCARA (AUTOMÁTICA PRIMER RENDER) ============
+// ============ POSICIÓN DE LA MÁSCARA (rectángulo base) ============
 
 function determineMaskPosition(analysis, productType = "", ideaText = "") {
   const imageWidth = analysis.imageWidth || 1600;
   const imageHeight = analysis.imageHeight || 900;
 
-  // área más pequeña para evitar “bloques blancos”
   let width = Math.round(imageWidth * 0.18);
   let height = Math.round(imageHeight * 0.16);
   let x = Math.round((imageWidth - width) / 2);
@@ -336,9 +335,11 @@ function determineMaskPosition(analysis, productType = "", ideaText = "") {
   return { x, y, width, height };
 }
 
-// ================== MÁSCARA INICIAL (V19) ==================
+// ================== MÁSCARA (V21 – recorta parte baja) ==================
 //
-// 🔧 Aplica para la primera generación automática
+// Editamos principalmente la zona del objeto y el aire alrededor,
+// dejando SIN máscara la franja más baja (textura pura de la mesa)
+// para que no aparezcan bloques planos.
 //
 
 async function createMaskFromAnalysis(analysis) {
@@ -354,70 +355,21 @@ async function createMaskFromAnalysis(analysis) {
 
   const mask = Buffer.alloc(w * h, 0); // negro
 
-  // padding proporcional (reduce área editable)
-  const padX = Math.floor(width * 0.12);
-  const padY = Math.floor(height * 0.12);
+  // Padding asimétrico
+  const padX = Math.floor(width * 0.10);
+  const padYTop = Math.floor(height * 0.08);
+  const padYBottom = Math.floor(height * 0.30); // ← deja libre la base (mesa)
 
   const startX = Math.max(0, x + padX);
-  const startY = Math.max(0, y + padY);
   const endX = Math.min(w, x + width - padX);
-  const endY = Math.min(h, y + height - padY);
+
+  const startY = Math.max(0, y + padYTop);
+  const endY = Math.min(h, y + height - padYBottom);
 
   for (let j = startY; j < endY; j++) {
     for (let i = startX; i < endX; i++) {
       const idx = j * w + i;
       mask[idx] = 255; // blanco = zona editable
-    }
-  }
-
-  const pngBuffer = await sharp(mask, {
-    raw: { width: w, height: h, channels: 1 }
-  })
-    .png()
-    .toBuffer();
-
-  return pngBuffer.toString("base64");
-}
-
-// ================== MÁSCARA ESPECIAL REPOSICIÓN (V20) ==================
-//
-// Más área + feather suave, centrado en el click del usuario.
-//
-
-async function createRepositionMask(placement) {
-  const { imageWidth, imageHeight, finalPlacement } = placement;
-  const w = Math.max(1, Math.round(imageWidth));
-  const h = Math.max(1, Math.round(imageHeight));
-
-  const { x, y, width, height } = finalPlacement;
-
-  const mask = Buffer.alloc(w * h, 0); // negro
-
-  // Centro del área original
-  const cx = x + width / 2;
-  const cy = y + height / 2;
-
-  // Escalamos el rectángulo alrededor del click
-  const scale = 1.85; // más grande que la inicial
-  let maskW = Math.floor(width * scale);
-  let maskH = Math.floor(height * scale);
-  let maskX = Math.floor(cx - maskW / 2);
-  let maskY = Math.floor(cy - maskH / 2);
-
-  if (maskX < 0) maskX = 0;
-  if (maskY < 0) maskY = 0;
-  if (maskX + maskW > w) maskW = w - maskX;
-  if (maskY + maskH > h) maskH = h - maskY;
-
-  const feather = 26; // borde suave, degrade
-
-  for (let j = maskY; j < maskY + maskH; j++) {
-    for (let i = maskX; i < maskX + maskW; i++) {
-      const dx = Math.min(i - maskX, maskX + maskW - i);
-      const dy = Math.min(j - maskY, maskY + maskH - j);
-      const edge = Math.min(dx, dy) / feather;
-      const power = Math.max(0, Math.min(255, edge * 255));
-      mask[j * w + i] = power;
     }
   }
 
@@ -493,7 +445,7 @@ function buildEmotionalCopy({ roomStyle, productName, idea }) {
   let msg = `Diseñamos esta propuesta pensando en ${base}.`;
 
   if (productName) {
-    msg += ` Integramos ${productName} como pieza decorativa clave, buscando equilibrio entre estilo y serenidad.`;
+    msg += ` Integramos ${productName} como pieza decorativa clave, buscando equilibrio entre serenidad y presencia visual.`;
   }
 
   if (idea && idea.trim().length > 0) {
@@ -594,7 +546,7 @@ app.post(
         placement: analysis.finalPlacement
       });
 
-      // ====================== PROMPT PARA FLUX (ARQUITECTÓNICO D1) ====================== //
+      // ====================== PROMPT PARA FLUX (ARQUITECTÓNICO V21) ====================== //
 
       const lightDir = analysis.lightDirection || "izquierda";
 
@@ -606,31 +558,32 @@ app.post(
         `- Dirección de la luz: ${lightDir}.\n` +
         `- Superficies detectadas: ${(analysis.mainSurfaces || []).join(", ") ||
           "mesa de centro"}.\n\n` +
-        `REGLAS DE REALISMO:\n` +
+        `REGLAS DE REALISMO (ULTRA NATURAL + IMPACTO CONTROLADO):\n` +
         `1. El objeto debe apoyarse sobre una mesa, consola o repisa REAL de la foto.\n` +
         `2. NO reemplaces la textura original de la mesa ni la alfombra: conserva vetas, tramas y reflejos existentes.\n` +
-        `3. NO generes bloques planos ni fondo blanco: el fondo debe seguir siendo el material real de la escena.\n` +
+        `3. No generes bloques planos ni parches blancos. Mantén el material original donde no haya máscara.\n` +
         `4. Respeta perspectiva y líneas de fuga; el objeto debe alinearse con el plano de la mesa.\n` +
-        `5. Genera sombra de contacto suave y coherente con la luz (${lightDir}).\n` +
-        `6. Ajusta color y brillo del objeto a la temperatura de color del ambiente.\n` +
+        `5. Genera sombra de contacto suave y coherente con la luz (${lightDir}), para que se sienta con peso real.\n` +
+        `6. Ajusta color y brillo del objeto a la temperatura de color del ambiente, pero sin exagerar: foto de catálogo natural.\n` +
         `7. Solo edita la zona blanca de la máscara, mantén intacto el resto del cuarto.\n\n` +
-        `ESTILO VISUAL:\n` +
-        `- Fotografía real tipo catálogo de interiorismo.\n` +
-        `- Contraste suave, tonos cálidos y aspecto natural.\n\n` +
+        `ESTILO VISUAL (C + D):\n` +
+        `- Fotografía real de interiorismo de alto nivel.\n` +
+        `- Contraste moderado, tonos cálidos y aspecto natural.\n` +
+        `- El objeto debe tener presencia y protagonismo, pero siempre integrado, nunca como un sticker.\n\n` +
         (idea && idea.trim().length > 0
           ? `Instrucción del cliente: "${idea.trim()}".\n`
           : "El cliente no dio instrucciones específicas. Mantén el objeto sobrio, elegante y aspiracional.\n");
 
       const behaviorBlock =
-        "\nFOCO D1: Objeto decorativo sobre mesa (jarrón, escultura, centro de mesa, etc.).\n" +
+        "\nFOCO D1: Objeto decorativo sobre mesa (jarrón, escultura, cuadro apoyado, centro de mesa, etc.).\n" +
         "• Escala proporcional al resto del mobiliario.\n" +
-        "• Fusión natural con la escena; que nunca parezca un sticker pegado.\n";
+        "• Fusión natural con la escena; que nunca parezca pegado encima.\n";
 
       const prompt = basePrompt + behaviorBlock;
 
       // ====================== FLUX ====================== //
 
-      logStep("🧩 Llamando a FLUX (modo arquitectónico D1)...");
+      logStep("🧩 Llamando a FLUX (modo arquitectónico V21)...");
 
       const fluxReq = await fetch(
         `https://api.replicate.com/v1/models/${encodeURIComponent(
@@ -647,7 +600,7 @@ app.post(
               image: composedUrl,
               mask: `data:image/png;base64,${maskBase64}`,
               prompt,
-              guidance: 6.0,
+              guidance: 5.4,
               num_inference_steps: 34,
               output_format: "webp",
               output_quality: 98,
@@ -671,7 +624,6 @@ app.post(
         await new Promise((r) => setTimeout(r, 2000));
         const check = await fetch(
           `https://api.replicate.com/v1/predictions/${fluxStart.id}`,
-
           {
             headers: { Authorization: `Bearer ${REPLICATE_API_TOKEN}` }
           }
@@ -747,18 +699,18 @@ app.post(
   }
 );
 
-// ================== 🔥 RUTA REPOSICIÓN IA ESTABLE (V20) 🔥 ==================
+// ================== 🔥 RUTA REPOSICIÓN IA ESTABLE (V21) 🔥 ==================
 
 app.post("/experiencia-premium-reposicion", async (req, res) => {
   try {
     const {
-      roomImage,      // URL pública Cloudinary (antes)
-      ai_image_prev,  // Imagen generada versión 1
+      roomImage, // URL pública Cloudinary (antes)
+      ai_image_prev, // Imagen generada versión 1
       productId,
       x,
-      y,             // Coordenadas del click en tamaño real
+      y, // Coordenadas del click en tamaño real
       width,
-      height,        // Dimensiones originales de la imagen
+      height, // Dimensiones originales de la imagen
       idea
     } = req.body;
 
@@ -789,7 +741,6 @@ app.post("/experiencia-premium-reposicion", async (req, res) => {
       console.error("No se pudo obtener productType en reposición:", e);
     }
 
-    // área base en torno al click
     const boxWidth = Math.floor(width * 0.18);
     const boxHeight = Math.floor(height * 0.16);
     const x0 = Math.floor(x - boxWidth / 2);
@@ -806,20 +757,15 @@ app.post("/experiencia-premium-reposicion", async (req, res) => {
       }
     };
 
-    // 🔥 Nueva máscara con área ampliada + feather suave
-    const maskBase64 = await createRepositionMask(placement);
-    logStep("🟡 Máscara nueva reposición generada ✔", {
-      x0,
-      y0,
-      boxWidth,
-      boxHeight
-    });
+    const maskBase64 = await createMaskFromAnalysis(placement);
+    logStep("🟡 Máscara nueva generada ✔", { x0, y0, boxWidth, boxHeight });
 
     const miniPrompt =
       "Reposiciona el " +
       productTypeHint +
       " sobre una superficie coherente (mesa, consola o repisa) sin alterar el resto de la habitación.\n" +
-      "Respeta perspectiva, escala y sombras del entorno. No borres la textura de la mesa ni del suelo. Solo edita la zona blanca (degradada) de la máscara.\n" +
+      "Respeta perspectiva, escala y sombras del entorno. No borres la textura de la mesa ni del suelo donde no haya máscara. Solo edita la zona blanca de la máscara.\n" +
+      "Estilo: fotografía natural de interiorismo de alto nivel, objeto con presencia pero totalmente integrado.\n" +
       'Intención del cliente: "' +
       (idea || "reposicion manual") +
       '"';
@@ -839,8 +785,8 @@ app.post("/experiencia-premium-reposicion", async (req, res) => {
             image: imageToUse,
             mask: `data:image/png;base64,${maskBase64}`,
             prompt: miniPrompt,
-            guidance: 4.8,
-            num_inference_steps: 22,
+            guidance: 5.0,
+            num_inference_steps: 24,
             output_format: "webp",
             megapixels: "1"
           }
@@ -866,7 +812,7 @@ app.post("/experiencia-premium-reposicion", async (req, res) => {
     const upload = await uploadUrlToCloudinary(
       poll.output[0],
       "innotiva/repositions",
-      "reposicion-v2"
+      "reposicion-v21"
     );
 
     logStep("🟢 Reposición IA finalizada ✔", { url: upload.secure_url });
