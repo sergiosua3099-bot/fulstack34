@@ -1,5 +1,5 @@
 // index.js
-// INNOTIVA BACKEND PRO - /experiencia-premium - V19 ARQUITECTÓNICO D1 (ajuste máscara fino)
+// INNOTIVA BACKEND PRO - /experiencia-premium - V20 ARQUITECTÓNICO D1 (máscara inicial + máscara reposición pro)
 
 require("dotenv").config();
 const express = require("express");
@@ -269,7 +269,7 @@ async function analyzeRoomAndProduct({
 
     // Para D1, asumimos una mesa en el tercio inferior central
     const boxWidth = Math.round(imageWidth * 0.22);
-    const boxHeight = Math.round(imageHeight * 0.2);
+    const boxHeight = Math.round(imageHeight * 0.20);
     const x = Math.round((imageWidth - boxWidth) / 2);
     const y = Math.round(imageHeight * 0.55);
 
@@ -306,7 +306,7 @@ async function analyzeRoomAndProduct({
   return analysis;
 }
 
-// ============ POSICIÓN DE LA MÁSCARA (con fix de área) ============
+// ============ POSICIÓN DE LA MÁSCARA (AUTOMÁTICA PRIMER RENDER) ============
 
 function determineMaskPosition(analysis, productType = "", ideaText = "") {
   const imageWidth = analysis.imageWidth || 1600;
@@ -321,10 +321,10 @@ function determineMaskPosition(analysis, productType = "", ideaText = "") {
   const idea = (ideaText || "").toLowerCase();
 
   if (/abajo|inferior/i.test(idea)) y = Math.round(imageHeight * 0.68);
-  if (/arriba|superior/i.test(idea)) y = Math.round(imageHeight * 0.4);
+  if (/arriba|superior/i.test(idea)) y = Math.round(imageHeight * 0.40);
   if (/centro|centrado/i.test(idea))
     x = Math.round((imageWidth - width) / 2);
-  if (/izquierda/i.test(idea)) x = Math.round(imageWidth * 0.2);
+  if (/izquierda/i.test(idea)) x = Math.round(imageWidth * 0.20);
   if (/derecha/i.test(idea)) x = Math.round(imageWidth * 0.62);
 
   // Clamp
@@ -336,11 +336,9 @@ function determineMaskPosition(analysis, productType = "", ideaText = "") {
   return { x, y, width, height };
 }
 
-// ================== MÁSCARA ==================
+// ================== MÁSCARA INICIAL (V19) ==================
 //
-// 🔧 AJUSTE: en lugar de pintar TODO el rectángulo completo,
-// se contrae ~10–15% para que FLUX solo retoque el área
-// alrededor del objeto y no “planche” la textura de la mesa.
+// 🔧 Aplica para la primera generación automática
 //
 
 async function createMaskFromAnalysis(analysis) {
@@ -369,6 +367,57 @@ async function createMaskFromAnalysis(analysis) {
     for (let i = startX; i < endX; i++) {
       const idx = j * w + i;
       mask[idx] = 255; // blanco = zona editable
+    }
+  }
+
+  const pngBuffer = await sharp(mask, {
+    raw: { width: w, height: h, channels: 1 }
+  })
+    .png()
+    .toBuffer();
+
+  return pngBuffer.toString("base64");
+}
+
+// ================== MÁSCARA ESPECIAL REPOSICIÓN (V20) ==================
+//
+// Más área + feather suave, centrado en el click del usuario.
+//
+
+async function createRepositionMask(placement) {
+  const { imageWidth, imageHeight, finalPlacement } = placement;
+  const w = Math.max(1, Math.round(imageWidth));
+  const h = Math.max(1, Math.round(imageHeight));
+
+  const { x, y, width, height } = finalPlacement;
+
+  const mask = Buffer.alloc(w * h, 0); // negro
+
+  // Centro del área original
+  const cx = x + width / 2;
+  const cy = y + height / 2;
+
+  // Escalamos el rectángulo alrededor del click
+  const scale = 1.85; // más grande que la inicial
+  let maskW = Math.floor(width * scale);
+  let maskH = Math.floor(height * scale);
+  let maskX = Math.floor(cx - maskW / 2);
+  let maskY = Math.floor(cy - maskH / 2);
+
+  if (maskX < 0) maskX = 0;
+  if (maskY < 0) maskY = 0;
+  if (maskX + maskW > w) maskW = w - maskX;
+  if (maskY + maskH > h) maskH = h - maskY;
+
+  const feather = 26; // borde suave, degrade
+
+  for (let j = maskY; j < maskY + maskH; j++) {
+    for (let i = maskX; i < maskX + maskW; i++) {
+      const dx = Math.min(i - maskX, maskX + maskW - i);
+      const dy = Math.min(j - maskY, maskY + maskH - j);
+      const edge = Math.min(dx, dy) / feather;
+      const power = Math.max(0, Math.min(255, edge * 255));
+      mask[j * w + i] = power;
     }
   }
 
@@ -622,6 +671,7 @@ app.post(
         await new Promise((r) => setTimeout(r, 2000));
         const check = await fetch(
           `https://api.replicate.com/v1/predictions/${fluxStart.id}`,
+
           {
             headers: { Authorization: `Bearer ${REPLICATE_API_TOKEN}` }
           }
@@ -631,9 +681,7 @@ app.post(
 
       if (fluxResult.status === "failed" || !fluxResult.output?.[0]) {
         console.error("❌ FLUX falló:", fluxResult);
-        throw new Error(
-          "Flux-fill-dev no devolvió imagen (modo arquitectónico)"
-        );
+        throw new Error("Flux-fill-dev no devolvió imagen (modo arquitectónico)");
       }
 
       const generatedImageUrlFromReplicate = fluxResult.output[0];
@@ -699,18 +747,18 @@ app.post(
   }
 );
 
-// ================== 🔥 RUTA REPOSICIÓN IA ESTABLE 🔥 ==================
+// ================== 🔥 RUTA REPOSICIÓN IA ESTABLE (V20) 🔥 ==================
 
 app.post("/experiencia-premium-reposicion", async (req, res) => {
   try {
     const {
-      roomImage, // URL pública Cloudinary (antes)
-      ai_image_prev, // Imagen generada versión 1
+      roomImage,      // URL pública Cloudinary (antes)
+      ai_image_prev,  // Imagen generada versión 1
       productId,
       x,
-      y, // Coordenadas del click en tamaño real
+      y,             // Coordenadas del click en tamaño real
       width,
-      height, // Dimensiones originales de la imagen
+      height,        // Dimensiones originales de la imagen
       idea
     } = req.body;
 
@@ -741,6 +789,7 @@ app.post("/experiencia-premium-reposicion", async (req, res) => {
       console.error("No se pudo obtener productType en reposición:", e);
     }
 
+    // área base en torno al click
     const boxWidth = Math.floor(width * 0.18);
     const boxHeight = Math.floor(height * 0.16);
     const x0 = Math.floor(x - boxWidth / 2);
@@ -757,14 +806,20 @@ app.post("/experiencia-premium-reposicion", async (req, res) => {
       }
     };
 
-    const maskBase64 = await createMaskFromAnalysis(placement);
-    logStep("🟡 Máscara nueva generada ✔", { x0, y0, boxWidth, boxHeight });
+    // 🔥 Nueva máscara con área ampliada + feather suave
+    const maskBase64 = await createRepositionMask(placement);
+    logStep("🟡 Máscara nueva reposición generada ✔", {
+      x0,
+      y0,
+      boxWidth,
+      boxHeight
+    });
 
     const miniPrompt =
       "Reposiciona el " +
       productTypeHint +
       " sobre una superficie coherente (mesa, consola o repisa) sin alterar el resto de la habitación.\n" +
-      "Respeta perspectiva, escala y sombras del entorno. No borres la textura de la mesa ni del suelo. Solo edita la zona blanca de la máscara.\n" +
+      "Respeta perspectiva, escala y sombras del entorno. No borres la textura de la mesa ni del suelo. Solo edita la zona blanca (degradada) de la máscara.\n" +
       'Intención del cliente: "' +
       (idea || "reposicion manual") +
       '"';
