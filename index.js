@@ -1,5 +1,6 @@
 // index.js
 // INNOTIVA BACKEND PRO - /experiencia-premium
+// Versión V19 Arquitectónica (D1: objeto decorativo sobre mesa)
 
 require("dotenv").config();
 const express = require("express");
@@ -184,6 +185,13 @@ async function fetchProductFromShopify(productId) {
 }
 
 // ================== OPENAI VISION: CUARTO + PRODUCTO ==================
+//
+// Aquí le pedimos que entienda:
+// - Paredes
+// - Mesa / superficies horizontales
+// - Dirección de la luz
+// - Zona ideal para OBJETO DECORATIVO SOBRE MESA (D1)
+//
 
 async function analyzeRoomAndProduct({
   roomImageUrl,
@@ -192,22 +200,29 @@ async function analyzeRoomAndProduct({
   productName,
   productType
 }) {
-  logStep("OpenAI: análisis de cuarto + producto");
+  logStep("OpenAI: análisis arquitectónico cuarto + producto (D1)");
 
   const prompt =
-    'Analiza la habitación (room_image) y el producto (product_image) para integrar un CUADRO o una LÁMPARA minimalista premium en el espacio real del cliente.\n\n' +
+    'Analiza esta habitación real y el producto decorativo para integrarlo con REALISMO ARQUITECTÓNICO.\n\n' +
+    'Toma en cuenta:\n' +
+    '- Paredes, líneas de fuga y perspectiva.\n' +
+    '- Mesas, consolas o superficies horizontales donde podría apoyarse el producto.\n' +
+    '- Dirección de la luz (ventanas / lámparas existentes) y sombras.\n\n' +
+    'Tu tarea es encontrar la mejor ubicación para un OBJETO DECORATIVO SOBRE MESA o superficie similar dentro del espacio real.\n\n' +
     'DEVUELVE EXCLUSIVAMENTE un JSON con esta estructura EXACTA:\n\n' +
     '{\n' +
     '  "imageWidth": number,\n' +
     '  "imageHeight": number,\n' +
     '  "roomStyle": "texto corto",\n' +
+    '  "lightDirection": "izquierda" | "derecha" | "frontal" | "mixta",\n' +
+    '  "mainSurfaces": ["mesa de centro", "mesa lateral", "consola", "repisa", "otro"],\n' +
     '  "placement": { "x": number, "y": number, "width": number, "height": number },\n' +
     '  "finalPlacement": { "x": number, "y": number, "width": number, "height": number },\n' +
     '  "product": {\n' +
-    '    "normalizedType": "cuadro" | "lampara" | "otro",\n' +
+    '    "normalizedType": "objeto_mesa" | "cuadro" | "lampara" | "otro",\n' +
     '    "rawTypeHint": "texto",\n' +
     '    "colors": ["#hex", "#hex"],\n' +
-    '    "materials": ["madera", "metal", "tela", "vidrio"],\n' +
+    '    "materials": ["madera", "metal", "ceramica", "vidrio", "tela"],\n' +
     '    "texture": "texto",\n' +
     '    "finish": "mate/satinado/brillante"\n' +
     '  }\n' +
@@ -252,23 +267,27 @@ async function analyzeRoomAndProduct({
     !analysis.finalPlacement ||
     typeof analysis.finalPlacement.x !== "number"
   ) {
-    logStep("Análisis insuficiente, usando fallback simple de bounding box");
+    logStep("Análisis insuficiente, usando fallback para D1 (mesa)");
 
-    const imageWidth = analysis?.imageWidth || 1200;
-    const imageHeight = analysis?.imageHeight || 800;
-    const boxWidth = Math.round(imageWidth * 0.6);
-    const boxHeight = Math.round(imageHeight * 0.5);
+    const imageWidth = analysis?.imageWidth || 1600;
+    const imageHeight = analysis?.imageHeight || 900;
+
+    // Para D1, asumimos una mesa en el tercio inferior central
+    const boxWidth = Math.round(imageWidth * 0.22);
+    const boxHeight = Math.round(imageHeight * 0.22);
     const x = Math.round((imageWidth - boxWidth) / 2);
-    const y = Math.round((imageHeight - boxHeight) / 3);
+    const y = Math.round(imageHeight * 0.55);
 
     analysis = {
       imageWidth,
       imageHeight,
-      roomStyle: analysis?.roomStyle || "tu espacio",
+      roomStyle: analysis?.roomStyle || "tu sala",
+      lightDirection: analysis?.lightDirection || "izquierda",
+      mainSurfaces: analysis?.mainSurfaces || ["mesa de centro"],
       placement: { x, y, width: boxWidth, height: boxHeight },
       finalPlacement: { x, y, width: boxWidth, height: boxHeight },
       product: analysis?.product || {
-        normalizedType: "otro",
+        normalizedType: "objeto_mesa",
         rawTypeHint: productType || "",
         colors: [],
         materials: [],
@@ -280,7 +299,7 @@ async function analyzeRoomAndProduct({
 
   if (!analysis.product) {
     analysis.product = {
-      normalizedType: "otro",
+      normalizedType: "objeto_mesa",
       rawTypeHint: productType || "",
       colors: [],
       materials: [],
@@ -293,53 +312,61 @@ async function analyzeRoomAndProduct({
 }
 
 // ============ POSICIÓN DE LA MÁSCARA SEGÚN PRODUCTO + IDEA ============
+//
+// Aquí respetamos el análisis, pero aplicamos reglas extra para
+// objetos sobre mesa (D1), cuadros y lámparas.
+//
 
 function determineMaskPosition(analysis, productType = "", ideaText = "") {
-  const imageWidth = analysis.imageWidth || 1200;
-  const imageHeight = analysis.imageHeight || 800;
+  const imageWidth = analysis.imageWidth || 1600;
+  const imageHeight = analysis.imageHeight || 900;
 
-  let width = Math.round(imageWidth * 0.30);
-  let height = Math.round(imageHeight * 0.24);
+  let width = Math.round(imageWidth * 0.26);
+  let height = Math.round(imageHeight * 0.22);
   let x = Math.round((imageWidth - width) / 2);
   let y = Math.round((imageHeight - height) / 2);
 
   const type = (productType || "").toLowerCase();
   const idea = (ideaText || "").toLowerCase();
+  const normType = (analysis.product?.normalizedType || "").toLowerCase();
 
   // Cuadros
-  if (/(cuadro|frame|marco|poster|lienzo|art)/i.test(type)) {
+  if (/(cuadro|frame|marco|poster|lienzo|art)/i.test(type) || normType === "cuadro") {
     y = Math.round(imageHeight * 0.18);
     height = Math.round(imageHeight * 0.26);
   }
 
-  // Muebles bajos
-  if (/(mesa|table|coffee|sofá|sofa|mueble|aparador)/i.test(type)) {
-    y = Math.round(imageHeight * 0.55);
-    height = Math.round(imageHeight * 0.30);
-  }
-
   // Lámparas
-  if (/(lámpara|lampara|lamp|ceiling|techo|hanging|pendant)/i.test(type)) {
+  if (
+    /(lámpara|lampara|lamp|ceiling|techo|hanging|pendant)/i.test(type) ||
+    normType === "lampara"
+  ) {
     y = Math.round(imageHeight * 0.08);
-    height = Math.round(imageHeight * 0.22);
+    height = Math.round(imageHeight * 0.20);
   }
 
-  // Decor pequeño
-  if (/(decor|florero|plant|planta|figura|ornamento)/i.test(type)) {
-    width = Math.round(imageWidth * 0.25);
-    height = Math.round(imageHeight * 0.22);
-    y = Math.round(imageHeight * 0.60);
+  // Objeto decorativo sobre mesa (D1)
+  if (
+    normType === "objeto_mesa" ||
+    /(mesa|table|coffee|centro de mesa|jarr[oó]n|florero|vase|decor)/i.test(
+      type
+    )
+  ) {
+    width = Math.round(imageWidth * 0.20);
+    height = Math.round(imageHeight * 0.20);
+    // tercio inferior central
+    y = Math.round(imageHeight * 0.55);
   }
 
   // Idea del cliente
   if (idea) {
     if (/arriba|superior/i.test(idea)) y = Math.round(imageHeight * 0.10);
-    if (/abajo|inferior/i.test(idea)) y = Math.round(imageHeight * 0.65);
-    if (/izquierda/i.test(idea)) x = Math.round(imageWidth * 0.10);
-    if (/derecha/i.test(idea)) x = Math.round(imageWidth * 0.60);
+    if (/abajo|inferior/i.test(idea)) y = Math.round(imageHeight * 0.70);
+    if (/izquierda/i.test(idea)) x = Math.round(imageWidth * 0.12);
+    if (/derecha/i.test(idea)) x = Math.round(imageWidth * 0.64);
     if (/centro|centrado/i.test(idea))
       x = Math.round((imageWidth - width) / 2);
-    if (/esquina/i.test(idea)) width = Math.round(imageWidth * 0.22);
+    if (/esquina/i.test(idea)) width = Math.round(imageWidth * 0.18);
   }
 
   // Clamp
@@ -383,13 +410,17 @@ async function createMaskFromAnalysis(analysis) {
 }
 
 // ============ COMPOSICIÓN REAL: CUARTO + PRODUCTO PNG ============
+//
+// Aquí solo generamos una BASE donde el producto ya está “aprox”,
+// para que FLUX lo entienda como referencia, no como sticker plano.
+//
 
 async function composeProductOnRoom({
   roomImageUrl,
   productImageUrl,
   placement
 }) {
-  logStep("Componiendo producto PNG dentro del cuarto", {
+  logStep("Componiendo producto PNG dentro del cuarto (base arquitectónica)", {
     roomImageUrl,
     productImageUrl
   });
@@ -412,10 +443,9 @@ async function composeProductOnRoom({
       width: Math.max(80, width),
       fit: "contain"
     })
-    .png() // forzamos PNG para respetar alpha si viene con transparencia
+    .png() // respetamos alpha si viene sin fondo
     .toBuffer();
 
-  // Componer sobre el cuarto
   const composedBuffer = await sharp(roomBuffer)
     .composite([
       {
@@ -445,7 +475,7 @@ function buildEmotionalCopy({ roomStyle, productName, idea }) {
   let msg = `Diseñamos esta propuesta pensando en ${base}.`;
 
   if (productName) {
-    msg += ` Integrando ${productName} como protagonista, buscamos un equilibrio entre estilo y calidez.`;
+    msg += ` Integramos ${productName} como pieza decorativa clave, buscando equilibrio entre estilo y serenidad.`;
   }
 
   if (idea && idea.trim().length > 0) {
@@ -474,7 +504,7 @@ app.post(
         productName,
         productUrl,
         idea,
-        productCutoutUrl // NUEVO: PNG recortado sin fondo (Cloudinary, etc.)
+        productCutoutUrl // PNG recortado sin fondo (Cloudinary, etc.)
       } = req.body;
 
       if (!file) {
@@ -509,7 +539,7 @@ app.post(
       const effectiveProductName =
         productName || productData.title || "tu producto";
 
-      // 🔥 Preferimos un PNG recortado si viene del front (productCutoutUrl)
+      // Preferimos un PNG recortado si viene del front (productCutoutUrl)
       let productImageUrl =
         productCutoutUrl && productCutoutUrl.trim().length > 0
           ? productCutoutUrl.trim()
@@ -538,50 +568,79 @@ app.post(
       );
       analysis.finalPlacement = refinedPlacement;
 
-      logStep("Generando máscara...");
+      logStep("Generando máscara arquitectónica...");
       const maskBase64 = await createMaskFromAnalysis(analysis);
       logStep("Máscara generada correctamente");
 
-      // 5) Componer el producto PNG real dentro del cuarto (antes de IA)
+      // 5) Componer el producto PNG real dentro del cuarto (base para IA)
       const composedUrl = await composeProductOnRoom({
         roomImageUrl: userImageUrl,
         productImageUrl,
         placement: analysis.finalPlacement
       });
 
-      // ====================== PROMPT PARA FLUX ====================== //
+      // ====================== PROMPT PARA FLUX (NIVEL ARQUITECTÓNICO, D1) ====================== //
 
       const rawType = productData.productType || "";
       const normalizedType =
         analysis.product?.normalizedType ||
         (/(lámpara|lampara|lamp|ceiling|techo|pendant)/i.test(rawType)
           ? "lampara"
-          : "cuadro");
+          : /(cuadro|frame|poster|art|lienzo)/i.test(rawType)
+          ? "cuadro"
+          : "objeto_mesa");
 
       const ideaContext =
         idea && idea.trim().length > 0
-          ? 'Intención del cliente: "' + idea.trim() + '"'
-          : "El cliente no agregó indicaciones específicas. Mantén el producto natural y aspiracional.";
+          ? 'Instrucción del cliente: "' + idea.trim() + '".'
+          : "El cliente no agregó indicaciones específicas. Mantén el objeto decorativo sobrio y aspiracional.";
+
+      const lightDir = analysis.lightDirection || "izquierda";
 
       const basePrompt =
-        "En la imagen de entrada YA hemos colocado el producto real dentro del espacio del cliente.\n" +
-        "Tu trabajo NO es inventar un producto nuevo, sino pulir bordes, sombras y luz para que parezca completamente integrado.\n\n" +
-        ideaContext +
-        "\n\n" +
-        "Respeta el diseño, forma y colores del producto. No lo borres, no lo reemplaces.\n" +
-        "Solo edita la zona blanca de la máscara y deja el resto de la habitación casi intacta.\n" +
-        "No cambies el mobiliario ni la arquitectura de la habitación, enfócate en fusionar producto y entorno.";
+        `OBJETIVO GLOBAL:\n` +
+        `Integrar un OBJETO DECORATIVO SOBRE MESA en la escena real como si hubiera sido colocado físicamente en el espacio.\n\n` +
+        `ESCENA:\n` +
+        `- Habitación real con estilo ${analysis.roomStyle || "minimalista"}.\n` +
+        `- Dirección de la luz principal: ${lightDir}.\n` +
+        `- Superficies detectadas: ${(analysis.mainSurfaces || []).join(", ") ||
+          "mesa de centro"}.\n\n` +
+        `REGLAS DE REALISMO ARQUITECTÓNICO:\n` +
+        `1. Mantén la arquitectura, ventanas, puertas y muebles existentes.\n` +
+        `2. Coloca el objeto decorativo sobre una mesa, consola o superficie horizontal real de la foto.\n` +
+        `3. Respeta la perspectiva y las líneas de fuga: el objeto debe alinearse con el plano de la mesa.\n` +
+        `4. Genera sombra de contacto coherente con la luz existente (dirección ${lightDir}).\n` +
+        `5. Ajusta el color y brillo del objeto para que coincida con la temperatura de color de la habitación.\n` +
+        `6. Mantén textura y detalle tanto del objeto como de la superficie donde se apoya.\n` +
+        `7. No inventes muebles nuevos ni cambies drásticamente el espacio.\n` +
+        `8. Solo edita la zona de la máscara; el resto de la habitación debe quedar casi intacto.\n\n` +
+        `ESTILO VISUAL:\n` +
+        `- Render fotográfico 4K, natural, estilo catálogo de interiorismo.\n` +
+        `- Contraste suave, tonos cálidos y sensación de luz real.\n` +
+        `- Sin artefactos ni glitches propios de IA.\n\n` +
+        ideaContext;
 
-      const behaviorBlock =
-        normalizedType === "lampara"
-          ? "Se trata de una LÁMPARA. Ajusta sutilmente brillo y sombras para que parezca la fuente de luz correcta en la escena, sin inventar lámparas nuevas."
-          : "Se trata de un CUADRO / PIEZA DE ARTE EN PARED. Ajusta sombras de contacto, bordes y textura sobre la pared, sin cambiar el estilo ni el motivo del cuadro.";
+      let behaviorBlock = "";
 
-      const prompt = basePrompt + "\n\n" + behaviorBlock;
+      if (normalizedType === "objeto_mesa") {
+        behaviorBlock =
+          "\n\nFOCO D1: Es un objeto decorativo sobre mesa (por ejemplo, jarrón, escultura o centro de mesa).\n" +
+          "• Debe posarse firmemente sobre una superficie horizontal visible.\n" +
+          "• Ajusta su escala para que sea proporcional al resto del mobiliario.\n" +
+          "• Si hay mesa de centro, prioriza colocar el objeto ahí, sin tapar por completo otros elementos.\n";
+      } else if (normalizedType === "lampara") {
+        behaviorBlock =
+          "\n\nFOCO: LÁMPARA. Ajusta el brillo y la emisión de luz para que corresponda con la iluminación existente, sin crear focos irreales.";
+      } else if (normalizedType === "cuadro") {
+        behaviorBlock =
+          "\n\nFOCO: CUADRO EN PARED. Integra el cuadro con la textura de la pared, generando sombras suaves en el contorno.";
+      }
+
+      const prompt = basePrompt + behaviorBlock;
 
       // ====================== FLUX SAFE MODE ====================== //
 
-      logStep("🧩 Llamando a FLUX (safe mode)...");
+      logStep("🧩 Llamando a FLUX (modo arquitectónico D1)...");
 
       const fluxReq = await fetch(
         `https://api.replicate.com/v1/models/${encodeURIComponent(
@@ -598,8 +657,8 @@ app.post(
               image: composedUrl, // base ya incluye producto
               mask: `data:image/png;base64,${maskBase64}`,
               prompt,
-              guidance: 5.5,
-              num_inference_steps: 24,
+              guidance: 6.0,
+              num_inference_steps: 36,
               output_format: "webp",
               output_quality: 98,
               megapixels: "1"
@@ -631,7 +690,7 @@ app.post(
 
       if (fluxResult.status === "failed" || !fluxResult.output?.[0]) {
         console.error("❌ FLUX falló:", fluxResult);
-        throw new Error("Flux-fill-dev no devolvió imagen (safe mode)");
+        throw new Error("Flux-fill-dev no devolvió imagen (modo arquitectónico)");
       }
 
       const generatedImageUrlFromReplicate = fluxResult.output[0];
@@ -731,7 +790,7 @@ app.post("/experiencia-premium-reposicion", async (req, res) => {
     const imageToUse =
       ai_image_prev && ai_image_prev !== "" ? ai_image_prev : roomImage;
 
-    let productTypeHint = "producto decorativo";
+    let productTypeHint = "objeto decorativo";
     try {
       const p = await fetchProductFromShopify(productId);
       productTypeHint = p.productType || productTypeHint;
@@ -739,10 +798,9 @@ app.post("/experiencia-premium-reposicion", async (req, res) => {
       console.error("No se pudo obtener productType en reposición:", e);
     }
 
-    // 🔧 Nueva lógica: centramos la caja alrededor del click,
-    // con tamaño proporcional (parche ~22% del ancho/alto de la imagen).
-    const boxWidth = Math.floor(width * 0.22);
-    const boxHeight = Math.floor(height * 0.22);
+    // centramos la caja alrededor del click
+    const boxWidth = Math.floor(width * 0.20);
+    const boxHeight = Math.floor(height * 0.20);
     const x0 = Math.floor(x - boxWidth / 2);
     const y0 = Math.floor(y - boxHeight / 2);
 
@@ -761,10 +819,10 @@ app.post("/experiencia-premium-reposicion", async (req, res) => {
     logStep("🟡 Máscara nueva generada ✔", { x0, y0, boxWidth, boxHeight });
 
     const miniPrompt =
-      "Reubica el " +
+      "Reposiciona el " +
       productTypeHint +
-      " sin alterar el resto de la habitación.\n" +
-      "Solo edita la zona blanca de la máscara, manteniendo intactos muebles, paredes y luz general.\n" +
+      " sobre una superficie coherente (mesa, consola o repisa) sin alterar el resto de la habitación.\n" +
+      "Respeta perspectiva, escala y sombras del entorno. Solo edita la zona blanca de la máscara.\n" +
       'Intención del cliente: "' +
       (idea || "reposicion manual") +
       '"';
@@ -784,8 +842,8 @@ app.post("/experiencia-premium-reposicion", async (req, res) => {
             image: imageToUse,
             mask: `data:image/png;base64,${maskBase64}`,
             prompt: miniPrompt,
-            guidance: 4.6,
-            num_inference_steps: 20,
+            guidance: 4.8,
+            num_inference_steps: 22,
             output_format: "webp",
             megapixels: "1"
           }
