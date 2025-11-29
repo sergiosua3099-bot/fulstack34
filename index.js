@@ -1,4 +1,5 @@
-// index.js — INNOTIVA BACKEND PRO FINAL DECEMBER BUILD
+// index.js
+// INNOTIVA BACKEND PRO - /experiencia-premium
 
 require("dotenv").config();
 const express = require("express");
@@ -8,17 +9,20 @@ const sharp = require("sharp");
 const crypto = require("crypto");
 const OpenAI = require("openai");
 const cloudinary = require("cloudinary").v2;
-const fetch = global.fetch;
 
-// ================== CONFIG ==================
+// fetch compatible con Node 18/20/22
+const fetch = (...args) =>
+  import("node-fetch").then(({ default: fetch }) => fetch(...args));
+
+// ================== CONFIG BÁSICA ==================
+
 const app = express();
 const upload = multer({ storage: multer.memoryStorage() });
-app.use(cors());
-app.use(express.json());
-
 const PORT = process.env.PORT || 10000;
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY
+});
 
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -26,128 +30,91 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
-const REPLICATE_TOKEN = process.env.REPLICATE_API_TOKEN;
-const REPLICATE_MODEL = process.env.REPLICATE_MODEL_SLUG || "black-forest-labs/flux-fill-dev";
-const SHOP = process.env.SHOPIFY_STORE_DOMAIN;
-const TOKEN = process.env.SHOPIFY_STOREFRONT_TOKEN;
+const SHOPIFY_STORE_DOMAIN = process.env.SHOPIFY_STORE_DOMAIN;
+const SHOPIFY_STOREFRONT_TOKEN = process.env.SHOPIFY_STOREFRONT_TOKEN;
 
-// ================== HEALTHCHECK ==================
-app.get("/", (_,res)=>res.send("🟢 INNOTIVA BACKEND RUNNING"));
-app.get("/health",(req,res)=>res.json({ok:true,time:new Date().toISOString()}));
+const REPLICATE_API_TOKEN = process.env.REPLICATE_API_TOKEN;
+const REPLICATE_MODEL_SLUG =
+  process.env.REPLICATE_MODEL_SLUG || "black-forest-labs/flux-fill-dev";
 
-// ================== UTILS ==================
-const log=x=>console.log(`📌 ${x}`);
+// ================== MIDDLEWARE ==================
 
-const safeParse = txt=>{
-  try{ return JSON.parse(txt.replace(/```json|```/g,"").trim()) }
-  catch(e){ return null }
-};
+app.use(cors());
+app.use(express.json());
 
-// upload buffer → cloudinary
-const uploadBuffer = (buffer,folder,name)=>new Promise((res,rej)=>{
-  cloudinary.uploader.upload_stream({folder,public_id:`${name}-${Date.now()}`},
-    (err,r)=>err?rej(err):res(r)
-  ).end(buffer)
+// healthchecks
+app.get("/", (req, res) => {
+  res.send("INNOTIVA BACKEND PRO funcionando ✅");
 });
 
-// upload URL → cloudinary
-const uploadURL = (url,folder,name)=>new Promise((res,rej)=>{
-  cloudinary.uploader.upload(url,{folder,public_id:`${name}-${Date.now()}`},
-  (err,r)=>err?rej(err):res(r))
+app.get("/health", (req, res) => {
+  res.json({ ok: true, time: new Date().toISOString() });
 });
 
-// Shopify Product Fetch
-async function getProduct(id){
-  const gid = id.startsWith("gid:")?id:`gid://shopify/Product/${id}`;
-  const q=`query($id:ID!){product(id:$id){title productType featuredImage{url}}}`;
-  const r = await fetch(`https://${SHOP}/api/2024-01/graphql.json`,{
-    method:"POST",
-    headers:{
-      "Content-Type":"application/json",
-      "X-Shopify-Storefront-Access-Token":TOKEN
-    },
-    body:JSON.stringify({query:q,variables:{id:gid}})
-  }).then(r=>r.json());
+// ================== HELPERS GENERALES ==================
 
-  if(!r.data?.product) throw new Error("❌ No product found in Shopify");
-  return {
-    name:r.data.product.title,
-    type:r.data.product.productType||"decor",
-    img:r.data.product.featuredImage?.url?.replace(".jpg",".png") // 🔥 PNG real
-  };
+function logStep(step, extra = {}) {
+  console.log("[INNOTIVA]", step, Object.keys(extra).length ? extra : "");
 }
 
-// ================== VISION ANALYSIS ==================
-async function analyze(room,prod,name,type,idea){
-  const prompt = `
-Analiza ambas imágenes y devuelve SOLO JSON:
-
-{
- "imageWidth":number,"imageHeight":number,
- "placement":{"x":n,"y":n,"width":n,"height":n},
- "finalPlacement":{"x":n,"y":n,"width":n,"height":n}
+function buildShopifyProductGid(numericId) {
+  if (String(numericId).startsWith("gid://")) return numericId;
+  return `gid://shopify/Product/${numericId}`;
 }
 
-Producto: ${name}
-Tipo: ${type}
-Idea cliente: "${idea||"no especificada"}"
+function safeParseJSON(raw, label = "JSON") {
+  if (!raw) return null;
+  const cleaned = raw
+    .replace(/```json/gi, "")
+    .replace(/```/g, "")
+    .trim();
+  try {
+    return JSON.parse(cleaned);
+  } catch (e) {
+    console.error(`Error parseando ${label}:`, cleaned);
+    return null;
+  }
+}
 
-No escribas texto adicional fuera del JSON.
-`;
+// ================== CLOUDINARY HELPERS ==================
 
-  const r = await openai.responses.create({
-    model:"gpt-4.1-mini",
-    input:[{
-      role:"user",content:[
-        {type:"input_text",text:prompt},
-        {type:"input_image",image_url:room},
-        {type:"input_image",image_url:prod}
-      ]
-    }]
+async function uploadBufferToCloudinary(buffer, folder, filenameHint = "image") {
+  return new Promise((resolve, reject) => {
+    const base64 = buffer.toString("base64");
+    cloudinary.uploader.upload(
+      `data:image/jpeg;base64,${base64}`,
+      {
+        folder,
+        public_id: `${filenameHint}-${Date.now()}`
+      },
+      (err, result) => {
+        if (err) return reject(err);
+        resolve(result);
+      }
+    );
   });
-
-  const raw = r.output[0].content
-    .filter(c=>c.type==="output_text")
-    .map(c=>c.text).join("\n");
-
-  const json=safeParse(raw);
-  if(!json) throw new Error("❌ Vision JSON parse error");
-
-  return json;
 }
 
-// ================== MASK ==================
-async function makeMask({imageWidth,imageHeight,finalPlacement}){
-  const w=imageWidth,h=imageHeight;
-  const buf=Buffer.alloc(w*h,0);
-
-  const {x,y,width,height}=finalPlacement;
-  for(let j=y;j<y+height;j++)
-    for(let i=x;i<x+width;i++)
-      buf[j*w+i]=255;
-
-  return sharp(buf,{raw:{width:w,height:h,channels:1}}).png().toBuffer();
+async function uploadUrlToCloudinary(
+  url,
+  folder,
+  filenameHint = "image-from-url"
+) {
+  return new Promise((resolve, reject) => {
+    cloudinary.uploader.upload(
+      url,
+      {
+        folder,
+        public_id: `${filenameHint}-${Date.now()}`
+      },
+      (err, result) => {
+        if (err) return reject(err);
+        resolve(result);
+      }
+    );
+  });
 }
 
-// ================== COMPOSITE PRODUCT ==================
-async function composite(roomURL,prodURL,box){
-  log("🧩 insertando producto PNG…");
-
-  const room=await fetch(roomURL).then(r=>r.arrayBuffer());
-  const item=await fetch(prodURL).then(r=>r.arrayBuffer());
-
-  const resized=await sharp(Buffer.from(item))
-    .resize(box.width,{fit:"contain"})
-    .png().toBuffer();
-
-  const final=await sharp(Buffer.from(room))
-    .composite([{input:resized,top:box.y,left:box.x}])
-    .jpeg({quality:96})
-    .toBuffer();
-
-  const up=await uploadBuffer(final,"innotiva/compose","placed");
-  return up.secure_url;
-// ================== THUMBNAILS ==================
 function buildThumbnails(publicId) {
   const low = cloudinary.url(publicId, {
     secure: true,
@@ -167,7 +134,308 @@ function buildThumbnails(publicId) {
   return { low, medium };
 }
 
+// ================== SHOPIFY HELPER ==================
+
+async function fetchProductFromShopify(productId) {
+  const gid = buildShopifyProductGid(productId);
+
+  const query = `
+    query GetProduct($id: ID!) {
+      product(id: $id) {
+        id
+        title
+        productType
+        description
+        featuredImage {
+          url
+        }
+      }
+    }
+  `;
+
+  const response = await fetch(
+    `https://${SHOPIFY_STORE_DOMAIN}/api/2024-01/graphql.json`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Shopify-Storefront-Access-Token": SHOPIFY_STOREFRONT_TOKEN
+      },
+      body: JSON.stringify({ query, variables: { id: gid } })
+    }
+  );
+
+  const json = await response.json();
+
+  if (json.errors || !json.data || !json.data.product) {
+    console.error("Error Shopify GraphQL:", JSON.stringify(json, null, 2));
+    throw new Error("No se pudo obtener el producto desde Shopify");
+  }
+
+  const p = json.data.product;
+
+  return {
+    id: p.id,
+    title: p.title,
+    productType: p.productType || "generic",
+    description: p.description || "",
+    featuredImage: p.featuredImage ? p.featuredImage.url : null
+  };
+}
+
+// ================== OPENAI VISION: CUARTO + PRODUCTO ==================
+
+async function analyzeRoomAndProduct({
+  roomImageUrl,
+  productImageUrl,
+  ideaText,
+  productName,
+  productType
+}) {
+  logStep("OpenAI: análisis de cuarto + producto");
+
+  const prompt =
+    'Analiza la habitación (room_image) y el producto (product_image) para integrar un CUADRO o una LÁMPARA minimalista premium en el espacio real del cliente.\n\n' +
+    'DEVUELVE EXCLUSIVAMENTE un JSON con esta estructura EXACTA:\n\n' +
+    '{\n' +
+    '  "imageWidth": number,\n' +
+    '  "imageHeight": number,\n' +
+    '  "roomStyle": "texto corto",\n' +
+    '  "placement": { "x": number, "y": number, "width": number, "height": number },\n' +
+    '  "finalPlacement": { "x": number, "y": number, "width": number, "height": number },\n' +
+    '  "product": {\n' +
+    '    "normalizedType": "cuadro" | "lampara" | "otro",\n' +
+    '    "rawTypeHint": "texto",\n' +
+    '    "colors": ["#hex", "#hex"],\n' +
+    '    "materials": ["madera", "metal", "tela", "vidrio"],\n' +
+    '    "texture": "texto",\n' +
+    '    "finish": "mate/satinado/brillante"\n' +
+    '  }\n' +
+    '}\n\n' +
+    'Intención del cliente: "' +
+    (ideaText || "") +
+    '"\n' +
+    'Tipo de producto: "' +
+    (productType || "desconocido") +
+    '"\n' +
+    'Nombre comercial: "' +
+    (productName || "producto") +
+    '"\n\n' +
+    "No expliques nada. Devuelve SOLO el JSON, sin texto adicional.";
+
+  const response = await openai.responses.create({
+    model: "gpt-4.1-mini",
+    input: [
+      {
+        role: "user",
+        content: [
+          { type: "input_text", text: prompt },
+          { type: "input_image", image_url: roomImageUrl },
+          { type: "input_image", image_url: productImageUrl }
+        ]
+      }
+    ]
+  });
+
+  const content = response.output?.[0]?.content || [];
+  const text = content
+    .filter((c) => c.type === "output_text")
+    .map((c) => c.text)
+    .join("\n")
+    .trim();
+
+  let analysis = safeParseJSON(text, "analysis room+product");
+
+  // Fallback si viene incompleto
+  if (
+    !analysis ||
+    !analysis.finalPlacement ||
+    typeof analysis.finalPlacement.x !== "number"
+  ) {
+    logStep("Análisis insuficiente, usando fallback simple de bounding box");
+
+    const imageWidth = analysis?.imageWidth || 1200;
+    const imageHeight = analysis?.imageHeight || 800;
+    const boxWidth = Math.round(imageWidth * 0.6);
+    const boxHeight = Math.round(imageHeight * 0.5);
+    const x = Math.round((imageWidth - boxWidth) / 2);
+    const y = Math.round((imageHeight - boxHeight) / 3);
+
+    analysis = {
+      imageWidth,
+      imageHeight,
+      roomStyle: analysis?.roomStyle || "tu espacio",
+      placement: { x, y, width: boxWidth, height: boxHeight },
+      finalPlacement: { x, y, width: boxWidth, height: boxHeight },
+      product: analysis?.product || {
+        normalizedType: "otro",
+        rawTypeHint: productType || "",
+        colors: [],
+        materials: [],
+        texture: "",
+        finish: ""
+      }
+    };
+  }
+
+  if (!analysis.product) {
+    analysis.product = {
+      normalizedType: "otro",
+      rawTypeHint: productType || "",
+      colors: [],
+      materials: [],
+      texture: "",
+      finish: ""
+    };
+  }
+
+  return analysis;
+}
+
+// ============ POSICIÓN DE LA MÁSCARA SEGÚN PRODUCTO + IDEA ============
+
+function determineMaskPosition(analysis, productType = "", ideaText = "") {
+  const imageWidth = analysis.imageWidth || 1200;
+  const imageHeight = analysis.imageHeight || 800;
+
+  let width = Math.round(imageWidth * 0.28);
+  let height = Math.round(imageHeight * 0.22);
+  let x = Math.round((imageWidth - width) / 2);
+  let y = Math.round((imageHeight - height) / 2);
+
+  const type = (productType || "").toLowerCase();
+  const idea = (ideaText || "").toLowerCase();
+
+  // Cuadros
+  if (/(cuadro|frame|marco|poster|lienzo|art)/i.test(type)) {
+    y = Math.round(imageHeight * 0.18);
+    height = Math.round(imageHeight * 0.26);
+  }
+
+  // Muebles bajos
+  if (/(mesa|table|coffee|sofá|sofa|mueble|aparador)/i.test(type)) {
+    y = Math.round(imageHeight * 0.55);
+    height = Math.round(imageHeight * 0.30);
+  }
+
+  // Lámparas
+  if (/(lámpara|lampara|lamp|ceiling|techo|hanging|pendant)/i.test(type)) {
+    y = Math.round(imageHeight * 0.08);
+    height = Math.round(imageHeight * 0.20);
+  }
+
+  // Decor pequeño
+  if (/(decor|florero|plant|planta|figura|ornamento)/i.test(type)) {
+    width = Math.round(imageWidth * 0.25);
+    height = Math.round(imageHeight * 0.22);
+    y = Math.round(imageHeight * 0.60);
+  }
+
+  // Idea del cliente
+  if (idea) {
+    if (/arriba|superior/i.test(idea)) y = Math.round(imageHeight * 0.10);
+    if (/abajo|inferior/i.test(idea)) y = Math.round(imageHeight * 0.65);
+    if (/izquierda/i.test(idea)) x = Math.round(imageWidth * 0.10);
+    if (/derecha/i.test(idea)) x = Math.round(imageWidth * 0.60);
+    if (/centro|centrado/i.test(idea))
+      x = Math.round((imageWidth - width) / 2);
+    if (/esquina/i.test(idea)) width = Math.round(imageWidth * 0.22);
+  }
+
+  // Clamp
+  if (x < 0) x = 0;
+  if (y < 0) y = 0;
+  if (x + width > imageWidth) width = imageWidth - x;
+  if (y + height > imageHeight) height = imageHeight - y;
+
+  return { x, y, width, height };
+}
+
+// ================== MÁSCARA ==================
+
+async function createMaskFromAnalysis(analysis) {
+  const { imageWidth, imageHeight, finalPlacement } = analysis;
+
+  if (!imageWidth || !imageHeight || !finalPlacement) {
+    throw new Error("Datos insuficientes para crear la máscara");
+  }
+
+  const { x, y, width, height } = finalPlacement;
+  const w = Math.max(1, Math.round(imageWidth));
+  const h = Math.max(1, Math.round(imageHeight));
+
+  const mask = Buffer.alloc(w * h, 0); // negro
+
+  for (let j = Math.max(0, y); j < Math.min(h, y + height); j++) {
+    for (let i = Math.max(0, x); i < Math.min(w, x + width); i++) {
+      const idx = j * w + i;
+      mask[idx] = 255; // blanco = zona editable
+    }
+  }
+
+  const pngBuffer = await sharp(mask, {
+    raw: { width: w, height: h, channels: 1 }
+  })
+    .png()
+    .toBuffer();
+
+  return pngBuffer.toString("base64");
+}
+
+// ============ COMPOSICIÓN REAL: CUARTO + PRODUCTO PNG ============
+
+async function composeProductOnRoom({
+  roomImageUrl,
+  productImageUrl,
+  placement
+}) {
+  logStep("Componiendo producto PNG dentro del cuarto");
+
+  const roomRes = await fetch(roomImageUrl);
+  const productRes = await fetch(productImageUrl);
+
+  if (!roomRes.ok || !productRes.ok) {
+    throw new Error("No se pudieron descargar imágenes para composición");
+  }
+
+  const roomBuffer = Buffer.from(await roomRes.arrayBuffer());
+  const productBuffer = Buffer.from(await productRes.arrayBuffer());
+
+  const { x, y, width } = placement;
+
+  // Redimensionamos el producto al ancho del área, manteniendo proporciones
+  const resizedProductBuffer = await sharp(productBuffer)
+    .resize({
+      width: Math.max(80, width),
+      fit: "contain"
+    })
+    .png()
+    .toBuffer();
+
+  // Componer sobre el cuarto
+  const composedBuffer = await sharp(roomBuffer)
+    .composite([
+      {
+        input: resizedProductBuffer,
+        top: Math.max(0, y),
+        left: Math.max(0, x)
+      }
+    ])
+    .jpeg({ quality: 96 })
+    .toBuffer();
+
+  const upload = await uploadBufferToCloudinary(
+    composedBuffer,
+    "innotiva/composed",
+    "room-plus-product"
+  );
+
+  logStep("Composición subida a Cloudinary", { url: upload.secure_url });
+  return upload.secure_url;
+}
+
 // ================== COPY EMOCIONAL ==================
+
 function buildEmotionalCopy({ roomStyle, productName, idea }) {
   const base = roomStyle || "tu espacio";
 
@@ -187,14 +455,16 @@ function buildEmotionalCopy({ roomStyle, productName, idea }) {
 }
 
 // ================== ENDPOINT PRINCIPAL ==================
+
 app.post(
   "/experiencia-premium",
-  upload.single("roomImage"),
+  upload.single("roomImage"), // ⚠️ se respeta el nombre ORIGINAL del campo
   async (req, res) => {
     const startedAt = Date.now();
 
     try {
-      log("🔥 Nueva experiencia-premium");
+      logStep("Nueva experiencia-premium recibida");
+
       const file = req.file;
       const { productId, productName, productUrl, idea } = req.body;
 
@@ -212,136 +482,106 @@ app.post(
         });
       }
 
-      // 1) Subir habitación
-      const roomUpload = await uploadBuffer(
+      // 1) Subir imagen del usuario
+      const uploadRoom = await uploadBufferToCloudinary(
         file.buffer,
         "innotiva/rooms",
         "room"
       );
-      const roomUrl = roomUpload.secure_url;
-      const roomPublicId = roomUpload.public_id;
+      const userImageUrl = uploadRoom.secure_url;
+      const roomPublicId = uploadRoom.public_id;
 
-      log(`🖼 Room subida: ${roomUrl}`);
+      logStep("Imagen del usuario subida a Cloudinary", {
+        roomImageUrl: userImageUrl
+      });
 
       // 2) Producto desde Shopify
-      const p = await getProduct(String(productId));
-      const effectiveName = productName || p.name || "tu producto";
+      const productData = await fetchProductFromShopify(productId);
+      const effectiveProductName =
+        productName || productData.title || "tu producto";
 
-      if (!p.img) {
+      const productImageUrl = productData.featuredImage;
+      if (!productImageUrl) {
         throw new Error("El producto no tiene imagen en Shopify");
       }
 
-      // 3) Vision: dónde va el producto
-      const analysisRaw = await analyze(
-        roomUrl,
-        p.img,
-        effectiveName,
-        p.type,
+      // 3) Análisis único con Vision (cuarto + producto)
+      const analysis = await analyzeRoomAndProduct({
+        roomImageUrl: userImageUrl,
+        productImageUrl,
+        ideaText: idea,
+        productName: effectiveProductName,
+        productType: productData.productType
+      });
+
+      // 4) Ajustar placement según tipo de producto + idea del cliente
+      const refinedPlacement = determineMaskPosition(
+        analysis,
+        productData.productType,
         idea
       );
+      analysis.finalPlacement = refinedPlacement;
 
-      // Normalizar analysis
-      const imageWidth = Number(analysisRaw.imageWidth) || 1200;
-      const imageHeight = Number(analysisRaw.imageHeight) || 800;
+      logStep("Generando máscara...");
+      const maskBase64 = await createMaskFromAnalysis(analysis);
+      logStep("Máscara generada correctamente");
 
-      let finalPlacement = analysisRaw.finalPlacement || analysisRaw.placement;
-      if (
-        !finalPlacement ||
-        typeof finalPlacement.x !== "number" ||
-        typeof finalPlacement.y !== "number"
-      ) {
-        // fallback centrado
-        const w = Math.round(imageWidth * 0.28);
-        const h = Math.round(imageHeight * 0.24);
-        finalPlacement = {
-          x: Math.round((imageWidth - w) / 2),
-          y: Math.round((imageHeight - h) / 3),
-          width: w,
-          height: h
-        };
-      }
-
-      // clamp
-      finalPlacement.x = Math.max(0, finalPlacement.x);
-      finalPlacement.y = Math.max(0, finalPlacement.y);
-      finalPlacement.width = Math.min(
-        imageWidth - finalPlacement.x,
-        finalPlacement.width
-      );
-      finalPlacement.height = Math.min(
-        imageHeight - finalPlacement.y,
-        finalPlacement.height
-      );
-
-      const analysis = {
-        imageWidth,
-        imageHeight,
-        roomStyle: analysisRaw.roomStyle || "tu espacio",
-        placement: analysisRaw.placement || finalPlacement,
-        finalPlacement,
-        product: analysisRaw.product || null
-      };
-
-      // 4) Máscara
-      log("🎭 Generando máscara…");
-      const maskBuffer = await makeMask({
-        imageWidth,
-        imageHeight,
-        finalPlacement
+      // 5) Componer el producto PNG real dentro del cuarto (antes de IA)
+      const composedUrl = await composeProductOnRoom({
+        roomImageUrl: userImageUrl,
+        productImageUrl,
+        placement: analysis.finalPlacement
       });
-      const maskBase64 = maskBuffer.toString("base64");
-      log("✅ Máscara generada");
 
-      // 5) Componer producto PNG real sobre el cuarto
-      const composedUrl = await composite(roomUrl, p.img, finalPlacement);
-      log(`🧩 Composición lista: ${composedUrl}`);
+      // ====================== PROMPT PARA FLUX ====================== //
 
-      // 6) Prompt para FLUX: SOLO pulir, no inventar otro producto
-      const prompt = `
-Eres un modelo de inpainting fotográfico de alta fidelidad.
+      const rawType = productData.productType || "";
+      const normalizedType =
+        analysis.product?.normalizedType ||
+        (/(lámpara|lampara|lamp|ceiling|techo|pendant)/i.test(rawType)
+          ? "lampara"
+          : "cuadro");
 
-IMPORTANTE:
-- En la imagen de entrada YA HEMOS COLOCADO el producto "${effectiveName}" con su forma real.
-- Tu trabajo NO es inventar un objeto nuevo.
-- Tu misión es integrar el producto con realismo dentro del cuarto:
-  - Sombras coherentes
-  - Bordes limpios
-  - Brillo y contraste acordes a la iluminación del entorno
+      const ideaContext =
+        idea && idea.trim().length > 0
+          ? 'Intención del cliente: "' + idea.trim() + '"'
+          : "El cliente no agregó indicaciones específicas. Mantén el producto natural y aspiracional.";
 
-Reglas:
-- Solo modifica la zona blanca de la máscara.
-- No borres el producto ni lo sustituyas por un televisor u otro objeto.
-- No cambies el color global de paredes, muebles o suelos.
-- No añadas personas, mascotas ni elementos fantasiosos.
+      const basePrompt =
+        "En la imagen de entrada YA hemos colocado el producto real dentro del espacio del cliente.\n" +
+        "Tu trabajo NO es inventar un producto nuevo, sino pulir bordes, sombras y luz para que parezca completamente integrado.\n\n" +
+        ideaContext +
+        "\n\n" +
+        "Respeta el diseño, forma y colores del producto. No lo borres, no lo reemplaces.\n" +
+        "Solo edita la zona blanca de la máscara y deja el resto de la habitación casi intacta.\n";
 
-Contexto del cliente:
-- Idea: "${idea || "sin indicaciones específicas"}"
-- Tipo de producto Shopify: "${p.type || "decor"}"
+      const behaviorBlock =
+        normalizedType === "lampara"
+          ? "Se trata de una LÁMPARA. Ajusta sutilmente brillo y sombras para que parezca la fuente de luz correcta en la escena."
+          : "Se trata de un CUADRO / PIEZA DE ARTE EN PARED. Ajusta sombras de contacto, bordes y textura sobre la pared.";
 
-Objetivo:
-- Que el cliente sienta que el producto EXISTE de verdad en su espacio,
-  como foto de catálogo premium.
-`;
+      const prompt = basePrompt + "\n\n" + behaviorBlock;
 
-      // 7) FLUX (Replicate)
-      log("🚀 Llamando a FLUX (safe mode)…");
+      // ====================== FLUX SAFE MODE ====================== //
 
-      const start = await fetch(
+      logStep("🧩 Llamando a FLUX (safe mode)...");
+
+      const fluxReq = await fetch(
         `https://api.replicate.com/v1/models/${encodeURIComponent(
-          REPLICATE_MODEL
+          REPLICATE_MODEL_SLUG
         )}/predictions`,
         {
           method: "POST",
           headers: {
-            Authorization: `Bearer ${REPLICATE_TOKEN}`,
+            Authorization: `Bearer ${REPLICATE_API_TOKEN}`,
             "Content-Type": "application/json"
           },
           body: JSON.stringify({
             input: {
-              image: composedUrl, // base con producto ya puesto
+              image: composedUrl, // base ya incluye producto
               mask: `data:image/png;base64,${maskBase64}`,
               prompt,
-              guidance: 5,
+              guidance: 5.5,
               num_inference_steps: 24,
               output_format: "webp",
               output_quality: 98,
@@ -349,70 +589,79 @@ Objetivo:
             }
           })
         }
-      ).then(r => r.json());
+      );
 
-      if (!start.id) {
-        console.error("❌ No se pudo iniciar FLUX:", start);
+      const fluxStart = await fluxReq.json();
+      if (!fluxStart.id) {
+        console.error("❌ No se pudo iniciar FLUX:", fluxStart);
         throw new Error("No se pudo iniciar FLUX");
       }
 
-      let fluxResult = start;
+      let fluxResult = fluxStart;
       while (
         fluxResult.status !== "succeeded" &&
         fluxResult.status !== "failed"
       ) {
-        await new Promise(r => setTimeout(r, 2000));
-        fluxResult = await fetch(
-          `https://api.replicate.com/v1/predictions/${start.id}`,
+        await new Promise((r) => setTimeout(r, 2000));
+        const check = await fetch(
+          `https://api.replicate.com/v1/predictions/${fluxStart.id}`,
           {
-            headers: { Authorization: `Bearer ${REPLICATE_TOKEN}` }
+            headers: { Authorization: `Bearer ${REPLICATE_API_TOKEN}` }
           }
-        ).then(r => r.json());
+        );
+        fluxResult = await check.json();
       }
 
       if (fluxResult.status === "failed" || !fluxResult.output?.[0]) {
         console.error("❌ FLUX falló:", fluxResult);
-        throw new Error("Flux-fill-dev no devolvió imagen");
+        throw new Error("Flux-fill-dev no devolvió imagen (safe mode)");
       }
 
-      const outUrl = fluxResult.output[0];
-      log(`✅ FLUX OK: ${outUrl}`);
+      const generatedImageUrlFromReplicate = fluxResult.output[0];
+      logStep("🟢 FLUX listo", { url: generatedImageUrlFromReplicate });
 
-      // 8) Subir resultado final a Cloudinary
-      const genUpload = await uploadURL(
-        outUrl,
+      // 9) Subir resultado a Cloudinary
+      const uploadGenerated = await uploadUrlToCloudinary(
+        generatedImageUrlFromReplicate,
         "innotiva/generated",
         "room-generated"
       );
-      const generatedImageUrl = genUpload.secure_url;
-      const generatedPublicId = genUpload.public_id;
+
+      const generatedImageUrl = uploadGenerated.secure_url;
+      const generatedPublicId = uploadGenerated.public_id;
 
       const thumbnails = {
         before: buildThumbnails(roomPublicId),
         after: buildThumbnails(generatedPublicId)
       };
 
-      // 9) Copy emocional
+      if (!userImageUrl || !generatedImageUrl) {
+        throw new Error("Imágenes incompletas (antes/después).");
+      }
+
+      // 10) Copy emocional
       const message = buildEmotionalCopy({
         roomStyle: analysis.roomStyle,
-        productName: effectiveName,
+        productName: effectiveProductName,
         idea
       });
 
+      // 11) Session
       const sessionId = crypto.randomUUID();
 
-      log(
-        `🎉 EXPERIENCIA LISTA en ${Date.now() - startedAt}ms`
-      );
+      logStep("EXPERIENCIA GENERADA OK", {
+        elapsedMs: Date.now() - startedAt
+      });
 
+      // 12) Respuesta final
       return res.status(200).json({
         ok: true,
         status: "complete",
         sessionId,
-        room_image: roomUrl,
+        room_image: userImageUrl,
         ai_image: generatedImageUrl,
         product_url: productUrl || null,
-        product_name: effectiveName,
+        product_name: effectiveProductName,
         product_id: productId,
         message,
         analysis,
@@ -421,7 +670,7 @@ Objetivo:
         created_at: new Date().toISOString()
       });
     } catch (err) {
-      console.error("❌ Error en /experiencia-premium:", err);
+      console.error("Error en /experiencia-premium:", err);
       return res.status(500).json({
         status: "error",
         message:
@@ -431,85 +680,84 @@ Objetivo:
   }
 );
 
-// ================== REPOSICIÓN IA ==================
+// ================== 🔥 RUTA REPOSICIÓN IA ESTABLE 🔥 ==================
+
 app.post("/experiencia-premium-reposicion", async (req, res) => {
   try {
     const {
-      roomImage,      // URL Cloudinary original
-      ai_image_prev,  // última versión IA (si existe)
+      roomImage, // URL pública Cloudinary (antes)
+      ai_image_prev, // Imagen generada versión 1
       productId,
       x,
-      y,
+      y, // Coordenadas del click en tamaño real
       width,
-      height,
+      height, // Dimensiones originales de la imagen
       idea
     } = req.body;
 
-    if (!roomImage || !productId || x == null || y == null || !width || !height) {
+    if (
+      !roomImage ||
+      !productId ||
+      x == null ||
+      y == null ||
+      !width ||
+      !height
+    ) {
       return res.status(400).json({
         error:
           "⚠ Faltan datos para reposición IA (roomImage / productId / x / y / width / height)"
       });
     }
 
-    const baseImage = ai_image_prev && ai_image_prev !== "" ? ai_image_prev : roomImage;
+    logStep("♻ Reposición manual iniciada", { x, y, width, height });
 
-    log(
-      `♻ Reposición manual → base=${baseImage.slice(
-        0,
-        60
-      )}… click=(${x},${y})`
-    );
+    const imageToUse =
+      ai_image_prev && ai_image_prev !== "" ? ai_image_prev : roomImage;
 
     let productTypeHint = "producto decorativo";
     try {
-      const p = await getProduct(String(productId));
-      productTypeHint = p.type || productTypeHint;
+      const p = await fetchProductFromShopify(productId);
+      productTypeHint = p.productType || productTypeHint;
     } catch (e) {
       console.error("No se pudo obtener productType en reposición:", e);
     }
-
-    // zona alrededor del click (20–24% del ancho/alto)
-    const boxWidth = Math.round(width * 0.24);
-    const boxHeight = Math.round(height * 0.24);
-    const boxX = Math.max(0, Math.round(x - boxWidth / 2));
-    const boxY = Math.max(0, Math.round(y - boxHeight / 2));
 
     const placement = {
       imageWidth: width,
       imageHeight: height,
       finalPlacement: {
-        x: boxX,
-        y: boxY,
-        width: boxWidth,
-        height: boxHeight
+        x: Math.floor(x - width * 0.12),
+        y: Math.floor(y - height * 0.12),
+        width: Math.floor(width * 0.24),
+        height: Math.floor(height * 0.24)
       }
     };
 
-    const maskBuffer = await makeMask(placement);
-    const maskBase64 = maskBuffer.toString("base64");
-    log("🟡 Máscara nueva para reposición IA generada");
+    const maskBase64 = await createMaskFromAnalysis(placement);
+    logStep("🟡 Máscara nueva generada ✔");
 
-    const miniPrompt = `
-Reubica el ${productTypeHint} en la zona blanca de la máscara
-según el click del cliente, sin alterar el resto de la habitación.
-No borres el producto ni lo reemplaces por otro distinto.
-Intención del cliente: "${idea || "reposicion manual"}"
-`;
+    const miniPrompt =
+      "Reubica el " +
+      productTypeHint +
+      " sin alterar el resto de la habitación.\n" +
+      "Solo edita la zona blanca de la máscara.\n" +
+      'Intención del cliente: "' +
+      (idea || "reposicion manual") +
+      '"';
 
-    const start = await fetch(
+    const flux = await fetch(
       `https://api.replicate.com/v1/models/${encodeURIComponent(
-        REPLICATE_MODEL
+        REPLICATE_MODEL_SLUG
       )}/predictions`,
       {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${REPLICATE_TOKEN}`,
+          Authorization: `Bearer ${REPLICATE_API_TOKEN}`,
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
           input: {
-            image: baseImage,
+            image: imageToUse,
             mask: `data:image/png;base64,${maskBase64}`,
             prompt: miniPrompt,
             guidance: 4.6,
@@ -519,35 +767,35 @@ Intención del cliente: "${idea || "reposicion manual"}"
           }
         })
       }
-    ).then(r => r.json());
+    );
 
-    let poll = start;
+    let poll = await flux.json();
     while (poll.status !== "succeeded" && poll.status !== "failed") {
-      await new Promise(r => setTimeout(r, 1800));
-      poll = await fetch(
-        `https://api.replicate.com/v1/predictions/${poll.id}`,
-        {
-          headers: { Authorization: `Bearer ${REPLICATE_TOKEN}` }
-        }
-      ).then(r => r.json());
+      await new Promise((r) => setTimeout(r, 1800));
+      poll = await (
+        await fetch(
+          `https://api.replicate.com/v1/predictions/${poll.id}`,
+          {
+            headers: { Authorization: `Bearer ${REPLICATE_API_TOKEN}` }
+          }
+        )
+      ).json();
     }
 
-    if (!poll.output?.[0]) {
-      throw new Error("Replicate no devolvió imagen nueva");
-    }
+    if (!poll.output?.[0]) throw new Error("Replicate no devolvió imagen nueva");
 
-    const up = await uploadURL(
+    const upload = await uploadUrlToCloudinary(
       poll.output[0],
       "innotiva/repositions",
       "reposicion-v2"
     );
 
-    log(`🟢 Reposición IA finalizada: ${up.secure_url}`);
+    logStep("🟢 Reposición IA finalizada ✔", { url: upload.secure_url });
 
     return res.json({
       ok: true,
-      ai_image: up.secure_url,
-      base_used: baseImage,
+      ai_image: upload.secure_url,
+      base_used: imageToUse,
       updated_at: new Date().toISOString()
     });
   } catch (e) {
@@ -556,7 +804,8 @@ Intención del cliente: "${idea || "reposicion manual"}"
   }
 });
 
-// ================== ARRANQUE SERVIDOR ==================
+// ================== 🚀 ARRANQUE DEL SERVIDOR ==================
+
 app.listen(PORT, () => {
   console.log(`🚀 INNOTIVA BACKEND PRO ejecutándose en puerto ${PORT}`);
   console.log(`🌍 Disponible en https://fulstack34.onrender.com`);
