@@ -1,7 +1,6 @@
 // index.js
-// INNOTIVA BACKEND PRO - /experiencia-premium - V19 ARQUITECTÓNICO D1 (ajustado realismo)
+// INNOTIVA BACKEND PRO - /experiencia-premium - V19 ARQUITECTÓNICO D1 (ajuste máscara fino)
 
-// ================== IMPORTS ==================
 require("dotenv").config();
 const express = require("express");
 const multer = require("multer");
@@ -269,10 +268,10 @@ async function analyzeRoomAndProduct({
     const imageHeight = analysis?.imageHeight || 900;
 
     // Para D1, asumimos una mesa en el tercio inferior central
-    const boxWidth = Math.round(imageWidth * 0.20);  // un poco más compacto
-    const boxHeight = Math.round(imageHeight * 0.18);
+    const boxWidth = Math.round(imageWidth * 0.22);
+    const boxHeight = Math.round(imageHeight * 0.20);
     const x = Math.round((imageWidth - boxWidth) / 2);
-    const y = Math.round(imageHeight * 0.56);
+    const y = Math.round(imageHeight * 0.55);
 
     analysis = {
       imageWidth,
@@ -337,7 +336,12 @@ function determineMaskPosition(analysis, productType = "", ideaText = "") {
   return { x, y, width, height };
 }
 
-// ================== MÁSCARA (ajustada para evitar desintegrar fondo) ==================
+// ================== MÁSCARA ==================
+//
+// 🔧 AJUSTE: en lugar de pintar TODO el rectángulo completo,
+// se contrae ~10–15% para que FLUX solo retoque el área
+// alrededor del objeto y no “planche” la textura de la mesa.
+//
 
 async function createMaskFromAnalysis(analysis) {
   const { imageWidth, imageHeight, finalPlacement } = analysis;
@@ -352,13 +356,17 @@ async function createMaskFromAnalysis(analysis) {
 
   const mask = Buffer.alloc(w * h, 0); // negro
 
-  const xStart = Math.max(0, x);
-  const yStart = Math.max(0, y);
-  const xEnd = Math.min(w, x + width);
-  const yEnd = Math.min(h, y + height);
+  // padding proporcional (reduce área editable)
+  const padX = Math.floor(width * 0.12);
+  const padY = Math.floor(height * 0.12);
 
-  for (let j = yStart; j < yEnd; j++) {
-    for (let i = xStart; i < xEnd; i++) {
+  const startX = Math.max(0, x + padX);
+  const startY = Math.max(0, y + padY);
+  const endX = Math.min(w, x + width - padX);
+  const endY = Math.min(h, y + height - padY);
+
+  for (let j = startY; j < endY; j++) {
+    for (let i = startX; i < endX; i++) {
       const idx = j * w + i;
       mask[idx] = 255; // blanco = zona editable
     }
@@ -412,8 +420,7 @@ async function composeProductOnRoom({
       {
         input: resizedProductBuffer,
         top: Math.max(0, y),
-        left: Math.max(0, x),
-        blend: "over"
+        left: Math.max(0, x)
       }
     ])
     .jpeg({ quality: 96 })
@@ -550,15 +557,14 @@ app.post(
         `- Dirección de la luz: ${lightDir}.\n` +
         `- Superficies detectadas: ${(analysis.mainSurfaces || []).join(", ") ||
           "mesa de centro"}.\n\n` +
-        `REGLAS DE REALISMO (MUY IMPORTANTES):\n` +
+        `REGLAS DE REALISMO:\n` +
         `1. El objeto debe apoyarse sobre una mesa, consola o repisa REAL de la foto.\n` +
         `2. NO reemplaces la textura original de la mesa ni la alfombra: conserva vetas, tramas y reflejos existentes.\n` +
         `3. NO generes bloques planos ni fondo blanco: el fondo debe seguir siendo el material real de la escena.\n` +
         `4. Respeta perspectiva y líneas de fuga; el objeto debe alinearse con el plano de la mesa.\n` +
         `5. Genera sombra de contacto suave y coherente con la luz (${lightDir}).\n` +
         `6. Ajusta color y brillo del objeto a la temperatura de color del ambiente.\n` +
-        `7. Solo edita la zona blanca de la máscara, mantén intacto el resto del cuarto.\n` +
-        `8. Si no estás seguro, conserva los píxeles originales tal cual y solo ajusta bordes/sombra del objeto.\n\n` +
+        `7. Solo edita la zona blanca de la máscara, mantén intacto el resto del cuarto.\n\n` +
         `ESTILO VISUAL:\n` +
         `- Fotografía real tipo catálogo de interiorismo.\n` +
         `- Contraste suave, tonos cálidos y aspecto natural.\n\n` +
@@ -569,8 +575,7 @@ app.post(
       const behaviorBlock =
         "\nFOCO D1: Objeto decorativo sobre mesa (jarrón, escultura, centro de mesa, etc.).\n" +
         "• Escala proporcional al resto del mobiliario.\n" +
-        "• Fusión natural con la escena; que nunca parezca un sticker pegado.\n" +
-        "• NUNCA destruyas la mesa ni la conviertas en un bloque liso o blanco.\n";
+        "• Fusión natural con la escena; que nunca parezca un sticker pegado.\n";
 
       const prompt = basePrompt + behaviorBlock;
 
@@ -593,8 +598,8 @@ app.post(
               image: composedUrl,
               mask: `data:image/png;base64,${maskBase64}`,
               prompt,
-              guidance: 5.2, // un poco más bajo para respetar más la foto original
-              num_inference_steps: 32,
+              guidance: 6.0,
+              num_inference_steps: 34,
               output_format: "webp",
               output_quality: 98,
               megapixels: "1"
@@ -666,7 +671,7 @@ app.post(
         elapsedMs: Date.now() - startedAt
       });
 
-      // 12) Respuesta final (MISMO SHAPE QUE YA USA TU FRONT)
+      // 12) Respuesta final
       return res.status(200).json({
         ok: true,
         status: "complete",
@@ -728,18 +733,15 @@ app.post("/experiencia-premium-reposicion", async (req, res) => {
       ai_image_prev && ai_image_prev !== "" ? ai_image_prev : roomImage;
 
     let productTypeHint = "objeto decorativo";
-    let productTitle = "tu producto decorativo";
     try {
       const p = await fetchProductFromShopify(productId);
       productTypeHint = p.productType || productTypeHint;
-      productTitle = p.title || productTitle;
     } catch (e) {
       console.error("No se pudo obtener productType en reposición:", e);
     }
 
-    // caja de reposición más pequeña aún
-    const boxWidth = Math.floor(width * 0.16);
-    const boxHeight = Math.floor(height * 0.14);
+    const boxWidth = Math.floor(width * 0.18);
+    const boxHeight = Math.floor(height * 0.16);
     const x0 = Math.floor(x - boxWidth / 2);
     const y0 = Math.floor(y - boxHeight / 2);
 
@@ -760,11 +762,8 @@ app.post("/experiencia-premium-reposicion", async (req, res) => {
     const miniPrompt =
       "Reposiciona el " +
       productTypeHint +
-      " (“" +
-      productTitle +
-      "”) sobre una superficie coherente (mesa, consola o repisa) sin alterar el resto de la habitación.\n" +
+      " sobre una superficie coherente (mesa, consola o repisa) sin alterar el resto de la habitación.\n" +
       "Respeta perspectiva, escala y sombras del entorno. No borres la textura de la mesa ni del suelo. Solo edita la zona blanca de la máscara.\n" +
-      "NO generes manchas blancas ni superficies planas nuevas; si tienes duda, conserva los píxeles originales.\n" +
       'Intención del cliente: "' +
       (idea || "reposicion manual") +
       '"';
@@ -784,7 +783,7 @@ app.post("/experiencia-premium-reposicion", async (req, res) => {
             image: imageToUse,
             mask: `data:image/png;base64,${maskBase64}`,
             prompt: miniPrompt,
-            guidance: 4.5, // más bajo para que respete más la foto base
+            guidance: 4.8,
             num_inference_steps: 22,
             output_format: "webp",
             megapixels: "1"
