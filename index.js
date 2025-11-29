@@ -1,5 +1,6 @@
 // index.js
 // INNOTIVA BACKEND PRO - /experiencia-premium
+// Vision Director IA: decide ubicación + escala + contexto
 
 require("dotenv").config();
 const express = require("express");
@@ -180,9 +181,8 @@ async function fetchProductFromShopify(productId) {
   };
 }
 
-// ================== OPENAI HELPERS ==================
-// 🔥 NUEVO: Vision analiza cuarto + producto en una sola llamada
-// Vision NO genera imagen, solo devuelve JSON para que FLUX genere con realismo
+// ================== OPENAI VISION DIRECTOR ==================
+// Vision NO genera imagen: decide ubicación + escala + contexto
 
 async function analyzeRoomAndProduct({
   roomImageUrl,
@@ -191,11 +191,24 @@ async function analyzeRoomAndProduct({
   productName,
   productType
 }) {
-  logStep("OpenAI: análisis de cuarto + producto");
+  logStep("OpenAI: análisis de cuarto + producto (Vision Director)");
 
   const prompt = `
-Analiza la habitación (room_image) y el producto (product_image) para integrar un
-CUADRO o una LÁMPARA minimalista premium en el espacio real del cliente.
+Eres un ARQUITECTO VISUAL IA.
+Tu tarea es decidir el mejor lugar estético y lógico para integrar un CUADRO o una LÁMPARA minimalista premium en el espacio real del cliente.
+
+Analiza:
+- La pared principal, muebles, cama/sofá, ventanas, simetría.
+- Las áreas vacías que pueden ser usadas para destacar el producto.
+- La escala correcta del producto frente a puertas, muebles y paredes.
+- La dirección e intensidad de la luz.
+
+La intención del cliente (máxima prioridad) es:
+"${ideaText || "sin instrucciones específicas"}"
+
+Tipo y nombre comercial del producto:
+- productType: "${productType || "desconocido"}"
+- productName: "${productName || "producto"}"
 
 DEVUELVE EXCLUSIVAMENTE un JSON PURO con esta estructura EXACTA:
 
@@ -203,32 +216,27 @@ DEVUELVE EXCLUSIVAMENTE un JSON PURO con esta estructura EXACTA:
   "imageWidth": number,
   "imageHeight": number,
   "roomStyle": "texto corto (ej: minimalista cálido, nórdico limpio, etc.)",
-  "placement": { "x": number, "y": number, "width": number, "height": number },
-  "finalPlacement": { "x": number, "y": number, "width": number, "height": number },
+  "idealPlacement": {
+    "x": number,
+    "y": number,
+    "width": number,
+    "height": number
+  },
   "product": {
     "normalizedType": "cuadro" | "lampara" | "otro",
-    "rawTypeHint": "texto",
+    "rawTypeHint": "texto libre",
     "colors": ["#hex", "#hex"],
     "materials": ["madera", "metal", "tela", "vidrio"],
     "texture": "descripción breve del acabado",
-    "finish": "mate/satinado/brillante"
-  }
+    "finish": "mate" | "satinado" | "brillante"
+  },
+  "razon_visual": "explica en pocas palabras por qué ese lugar es el correcto",
+  "confianza": number
 }
 
-Instrucciones:
-- "imageWidth" y "imageHeight" deben ser aproximaciones numéricas del tamaño de la imagen de la habitación.
-- "placement" es una zona ideal aproximada donde colocar el producto.
-- "finalPlacement" puede ajustar ligeramente "placement" si ves una posición más lógica.
-- Todos los campos x, y, width, height DEBEN ser números.
-- Usa como contexto la siguiente intención del cliente (si existe):
-  "${ideaText || ""}"
-- Ten en cuenta el tipo de producto declarado:
-  "${productType || "desconocido"}" y el nombre comercial:
-  "${productName || "producto"}".
-
-NO GENERES TEXTO FUERA DEL JSON.
-NO EXPLIQUES NADA.
-DEVUELVE SOLO EL JSON.
+NO escribas nada fuera del JSON.
+NO añadas comentarios.
+NO expliques el JSON.
 `;
 
   const response = await openai.responses.create({
@@ -257,10 +265,10 @@ DEVUELVE SOLO EL JSON.
   // Fallback si viene incompleto
   if (
     !analysis ||
-    !analysis.finalPlacement ||
-    typeof analysis.finalPlacement.x !== "number"
+    !analysis.idealPlacement ||
+    typeof analysis.idealPlacement.x !== "number"
   ) {
-    logStep("Análisis insuficiente, usando fallback simple de bounding box");
+    logStep("Vision Director incompleto, usando fallback simple");
 
     const imageWidth = analysis?.imageWidth || 1200;
     const imageHeight = analysis?.imageHeight || 800;
@@ -273,8 +281,7 @@ DEVUELVE SOLO EL JSON.
       imageWidth,
       imageHeight,
       roomStyle: analysis?.roomStyle || "tu espacio",
-      placement: { x, y, width: boxWidth, height: boxHeight },
-      finalPlacement: { x, y, width: boxWidth, height: boxHeight },
+      idealPlacement: { x, y, width: boxWidth, height: boxHeight },
       product: analysis?.product || {
         normalizedType: "otro",
         rawTypeHint: productType || "",
@@ -282,11 +289,13 @@ DEVUELVE SOLO EL JSON.
         materials: [],
         texture: "",
         finish: ""
-      }
+      },
+      razon_visual: analysis?.razon_visual || "fallback automático",
+      confianza: analysis?.confianza || 0.3
     };
   }
 
-  // Normalizar product
+  // Normalizar producto
   if (!analysis.product) {
     analysis.product = {
       normalizedType: "otro",
@@ -298,10 +307,16 @@ DEVUELVE SOLO EL JSON.
     };
   }
 
+  // Adaptar a estructura usada por el resto del backend
+  const ideal = analysis.idealPlacement;
+  analysis.placement = analysis.placement || { ...ideal };
+  analysis.finalPlacement = analysis.finalPlacement || { ...ideal };
+
   return analysis;
 }
 
-// ============ POSICIÓN DE LA MÁSCARA SEGÚN PRODUCTO + IDEA ============
+// ============ POSICIÓN DE LA MÁSCARA (FALLBACK) ============
+// Solo se usa si Vision Director viene muy pobre
 
 function determineMaskPosition(analysis, productType = "", ideaText = "") {
   const imageWidth = analysis.imageWidth || 1200;
@@ -462,7 +477,7 @@ app.post(
         throw new Error("El producto no tiene imagen en Shopify");
       }
 
-      // 3) Análisis único con Vision (cuarto + producto)
+      // 3) Análisis único con Vision Director (cuarto + producto)
       const analysis = await analyzeRoomAndProduct({
         roomImageUrl: userImageUrl,
         productImageUrl,
@@ -471,19 +486,27 @@ app.post(
         productType: productData.productType
       });
 
-      // 4) Ajustar placement según tipo de producto + idea del cliente
-      const refinedPlacement = determineMaskPosition(
-        analysis,
-        productData.productType,
-        idea
-      );
-      analysis.finalPlacement = refinedPlacement;
+      // 4) Fallback solo si Vision no trae finalPlacement válido
+      if (
+        !analysis.finalPlacement ||
+        typeof analysis.finalPlacement.x !== "number"
+      ) {
+        logStep("Vision sin finalPlacement sólido → usando fallback interno");
+        const refinedPlacement = determineMaskPosition(
+          analysis,
+          productData.productType,
+          idea
+        );
+        analysis.finalPlacement = refinedPlacement;
+      } else {
+        logStep("Usando ubicación propuesta por Vision Director IA");
+      }
 
       logStep("Generando máscara...");
       const maskBase64 = await createMaskFromAnalysis(analysis);
       logStep("Máscara generada correctamente");
 
-      // ====================== PROMPT NUEVO ENFOCADO CUADROS/LÁMPARAS ====================== //
+      // ====================== PROMPT FOCALIZADO CUADROS/LÁMPARAS ====================== //
 
       const rawType = productData.productType || "";
       const normalizedType =
@@ -731,33 +754,41 @@ pareciendo parte original del espacio del cliente.
 );
 
 // ================== 🔥 RUTA REPOSICIÓN IA ESTABLE 🔥 ==================
-// Mantengo firma y lógica original
 
 app.post("/experiencia-premium-reposicion", async (req, res) => {
   try {
     const {
-      roomImage,       // URL pública Cloudinary (antes)
-      ai_image_prev,   // Imagen generada versión 1
+      roomImage, // URL pública Cloudinary (antes)
+      ai_image_prev, // Imagen generada versión 1
       productId,
-      x, y,            // Coordenadas del click en tamaño real
-      width, height,   // Dimensiones originales de la imagen
+      x,
+      y, // Coordenadas del click en tamaño real
+      width,
+      height, // Dimensiones originales de la imagen
       idea
     } = req.body;
 
-    // ================= VALIDACIÓN =================
-    if (!roomImage || !productId || !x || !y || !width || !height) {
+    // permitir x=0 / y=0 → usamos == null en vez de !
+    if (
+      !roomImage ||
+      !productId ||
+      x == null ||
+      y == null ||
+      !width ||
+      !height
+    ) {
       return res.status(400).json({
-        error: "⚠ Faltan datos para reposición IA (roomImage / productId / x / y / width / height)"
+        error:
+          "⚠ Faltan datos para reposición IA (roomImage / productId / x / y / width / height)"
       });
     }
 
     logStep("♻ Reposición manual iniciada", { x, y, width, height });
 
-    const imageToUse = ai_image_prev && ai_image_prev !== "" 
-      ? ai_image_prev        // si ya hay versión anterior → usamos esa
-      : roomImage;           // si es la primera reposición → usar original
+    const imageToUse =
+      ai_image_prev && ai_image_prev !== "" ? ai_image_prev : roomImage;
 
-    // Para enriquecer un poco el prompt, obtenemos tipo de producto (no es crítico)
+    // Intento de obtener tipo de producto (solo para enriquecer prompt)
     let productTypeHint = "producto decorativo";
     try {
       const p = await fetchProductFromShopify(productId);
@@ -766,7 +797,7 @@ app.post("/experiencia-premium-reposicion", async (req, res) => {
       console.error("No se pudo obtener productType en reposición:", e);
     }
 
-    // ================= 🚀 REGENERAR MÁSCARA =================
+    // 🚀 REGENERAR MÁSCARA alrededor del click
     const placement = {
       imageWidth: width,
       imageHeight: height,
@@ -781,7 +812,6 @@ app.post("/experiencia-premium-reposicion", async (req, res) => {
     const maskBase64 = await createMaskFromAnalysis(placement);
     logStep("🟡 Máscara nueva generada ✔");
 
-    // ================= IA GENERA V2 =================
     const miniPrompt = `
 Reubica el ${productTypeHint} sin alterar el resto de la habitación.
 Solo edita la zona blanca de la máscara.
@@ -812,10 +842,15 @@ Intención del cliente: "${idea || "reposicion manual"}"
 
     let poll = await flux.json();
     while (poll.status !== "succeeded" && poll.status !== "failed") {
-      await new Promise(r => setTimeout(r, 1800));
-      poll = await (await fetch(`https://api.replicate.com/v1/predictions/${poll.id}`, {
-        headers: { Authorization: `Bearer ${REPLICATE_API_TOKEN}` }
-      })).json();
+      await new Promise((r) => setTimeout(r, 1800));
+      poll = await (
+        await fetch(
+          `https://api.replicate.com/v1/predictions/${poll.id}`,
+          {
+            headers: { Authorization: `Bearer ${REPLICATE_API_TOKEN}` }
+          }
+        )
+      ).json();
     }
 
     if (!poll.output?.[0]) throw new Error("Replicate no devolvió imagen nueva");
@@ -834,13 +869,11 @@ Intención del cliente: "${idea || "reposicion manual"}"
       base_used: imageToUse,
       updated_at: new Date().toISOString()
     });
-
   } catch (e) {
     console.error("❌ Error en reposición IA", e);
     return res.status(500).json({ error: "No se pudo reposicionar IA." });
   }
 });
-
 
 // ================== 🚀 ARRANQUE DEL SERVIDOR ==================
 
