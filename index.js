@@ -269,7 +269,7 @@ async function analyzeRoomAndProduct({
 
     // Para D1, asumimos una mesa en el tercio inferior central
     const boxWidth = Math.round(imageWidth * 0.22);
-    const boxHeight = Math.round(imageHeight * 0.20);
+    const boxHeight = Math.round(imageHeight * 0.2);
     const x = Math.round((imageWidth - boxWidth) / 2);
     const y = Math.round(imageHeight * 0.55);
 
@@ -321,10 +321,10 @@ function determineMaskPosition(analysis, productType = "", ideaText = "") {
   const idea = (ideaText || "").toLowerCase();
 
   if (/abajo|inferior/i.test(idea)) y = Math.round(imageHeight * 0.68);
-  if (/arriba|superior/i.test(idea)) y = Math.round(imageHeight * 0.40);
+  if (/arriba|superior/i.test(idea)) y = Math.round(imageHeight * 0.4);
   if (/centro|centrado/i.test(idea))
     x = Math.round((imageWidth - width) / 2);
-  if (/izquierda/i.test(idea)) x = Math.round(imageWidth * 0.20);
+  if (/izquierda/i.test(idea)) x = Math.round(imageWidth * 0.2);
   if (/derecha/i.test(idea)) x = Math.round(imageWidth * 0.62);
 
   // Clamp
@@ -622,7 +622,6 @@ app.post(
         await new Promise((r) => setTimeout(r, 2000));
         const check = await fetch(
           `https://api.replicate.com/v1/predictions/${fluxStart.id}`,
-
           {
             headers: { Authorization: `Bearer ${REPLICATE_API_TOKEN}` }
           }
@@ -632,7 +631,9 @@ app.post(
 
       if (fluxResult.status === "failed" || !fluxResult.output?.[0]) {
         console.error("❌ FLUX falló:", fluxResult);
-        throw new Error("Flux-fill-dev no devolvió imagen (modo arquitectónico)");
+        throw new Error(
+          "Flux-fill-dev no devolvió imagen (modo arquitectónico)"
+        );
       }
 
       const generatedImageUrlFromReplicate = fluxResult.output[0];
